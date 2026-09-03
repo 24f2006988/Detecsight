@@ -4,10 +4,27 @@ Real-time person and vehicle detection for drone and helmet-camera video, served
 over FastAPI. Built for an AR situational-awareness overlay: the system tells a
 human operator what is in frame and what is moving.
 
+![Motion-filter false positives before and after the chronic-noise gates](docs/motion_before_after.jpg)
+
+*Same three frames, before and after the motion filter's chronic-noise gates.
+Purple `moving_object` boxes are the class-agnostic motion channel; green are
+classified `personnel`. The phantom purple boxes on foliage and platform edge
+are gone while the classified detections carry through untouched — the track IDs
+(`#91`, `#64`, `#62`, `#45`, `#157`) are the same before and after. That is the
+property the filter is held to: it may only remove what it can prove is noise,
+and it fails open when it cannot prove it.*
+
 **Scope:** operator situational awareness only — not fire control, not automated
 targeting, not combatant classification. The model detects four generic object
 classes and flags coherent motion; every decision stays with the person wearing
 the display.
+
+**Provenance:** this work was originally built as part of a Smart India
+Hackathon project, published under the team lead's account as
+[Fusion-Sight](https://github.com/soumik15630m/Fusion-Sight). The engineering in
+`app/`, `scripts/` and `tests/` is mine; this repository is that work under my
+own name, with a fresh history and a rewritten README. The two repositories have
+diverged since — this one is where development continues.
 
 ---
 
@@ -60,6 +77,19 @@ is a nuisance and a suppressed real one is unacceptable, so any gate that cannot
 judge passes the detection through.
 
 ## Results
+
+**Inference resolution was the first real fix.** The deployed checkpoint was
+running at imgsz 640 with a 0.35 confidence floor — both inherited defaults,
+neither measured. VisDrone targets are routinely under 32 px, which 640 destroys
+before the head ever sees them.
+
+![Aerial detection at imgsz 640/conf 0.35 versus 1280/conf 0.25](docs/aerial_before_after.jpg)
+
+*Same frame, imgsz 640 → 1280 and conf 0.35 → 0.25. The parked two-wheelers
+under the awnings and the pedestrians on the near pavement are recovered rather
+than invented — they are visible in the source frame. Note the false positive on
+the blue roof at bottom-left: the lower floor is not free. On VisDrone val this
+moved mAP50 0.5046 → 0.5623 and recall 0.4855 → 0.5262.*
 
 **TensorRT FP16 adopted, INT8 measured and rejected** (VisDrone val, imgsz 1280,
 batch 1, warmed up, ground checkpoint):
@@ -168,6 +198,19 @@ They assert safety properties, not just happy paths.
 - **No UAV-as-target class.** VisDrone is footage taken *from* drones, not *of*
   them. This needs UAV-labelled data and a fifth class; no threshold change can
   substitute.
+- **Confident false positives off-distribution.** Nothing in VisDrone or
+  WiderPerson resembles an indoor close-range scene, and the model has no
+  learned notion of "not a vehicle" for that viewpoint:
+
+  ![light_vehicle false positives on a pencil case and a highlighter](docs/offdistribution_false_positives.jpg)
+
+  *`light_vehicle` at 0.39–0.42 on a pencil case and a highlighter, across three
+  inference resolutions. Raising resolution removes one of the two boxes and
+  tightens the other; it does not remove the failure. This is a training-data
+  gap — indoor and hard-negative imagery — not a threshold to tune, and it is
+  the reason the confidence floor sits at 0.25 rather than the 0.16 where mean
+  F1 actually peaks.*
+
 - **~10 fps tracked throughput** at imgsz 1280. Fixed per-frame overhead
   dominates, so lowering imgsz does not help much.
 - **One GPU, serialised.** The threadpool keeps the event loop responsive; it
@@ -185,8 +228,18 @@ scripts/      dataset conversion/remapping, training, TensorRT export,
 tests/        standalone property tests
 data/         4-class dataset configs
 weights/      deployed checkpoints (ground + drone view)
+docs/         figures used above
 ```
 
 Datasets, training runs and captured footage are not tracked — see
 `scripts/prepare_training.py` and `scripts/remap_visdrone.py` for how the
-training data is assembled.
+training data is assembled. `data/battlesight_multi.yaml` and
+`data/battlesight_fpv.yaml` name an absolute datasets root; edit that `path:`
+line to match your machine before training.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). The datasets it is trained on carry their own
+terms: VisDrone, WiderPerson and AerialPerson are each licensed for research use
+by their respective authors, and the checkpoints in `weights/` inherit those
+terms.

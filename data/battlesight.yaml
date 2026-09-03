@@ -1,0 +1,13 @@
+# BattleSight AR — drone-view tactical detection
+# Derived from VisDrone2019-DET, 10 classes collapsed to 4.
+
+path: VisDrone                 # resolved against the ultralytics datasets_dir setting
+train: images/train            # 6471 images
+val: images/val                # 548 images
+test: images/test              # 1610 images
+
+names:
+  0: personnel
+  1: two_wheeler
+  2: light_vehicle
+  3: heavy_vehicle

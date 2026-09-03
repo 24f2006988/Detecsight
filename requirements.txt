@@ -1,0 +1,109 @@
+# Lets pip resolve the pinned torch==...+cu126 / torchvision==...+cu126 builds
+# below in this single `pip install -r requirements.txt` -- those local-version
+# wheels only exist on PyTorch's own index, not plain PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# albumentations enables the `fpv` augmentation profile (scripts/fpv_augment.py).
+# If it is missing, ultralytics SILENTLY skips the entire augmentation stage --
+# every checkpoint before 2026-09-02 was trained with no blur/noise/compression.
+# It depends on opencv-python-headless: see the opencv-python note below.
+albumentations==2.0.8
+aioice==0.10.2
+aiortc==1.15.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+av==17.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+contourpy==1.3.3
+cryptography==50.0.1
+cycler==0.12.1
+dnspython==2.8.0
+fastapi==0.141.1
+filelock==3.32.3
+fonttools==4.63.0
+fsspec==2026.7.0
+google-crc32c==1.8.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+ifaddr==0.2.0
+Jinja2==3.1.6
+kiwisolver==1.5.1
+lap==0.5.13
+MarkupSafe==3.0.3
+matplotlib==3.11.1
+mpmath==1.3.0
+mss==10.2.0
+networkx==3.6.1
+numpy==2.5.2
+nvidia-ml-py==13.610.43
+# MUST be opencv-python, NOT opencv-python-headless. Both unpack into the same
+# cv2/ directory, so whichever installs LAST wins -- and the headless build has
+# no highgui, which breaks cv2.namedWindow/imshow (annotate_video.py --show and
+# annotate_screen.py preview) with "The function is not implemented".
+# albumentations depends on opencv-python-headless, so installing or upgrading it
+# will pull headless back in and clobber this. If preview breaks, run:
+#   pip uninstall -y opencv-python opencv-python-headless
+#   pip install opencv-python==5.0.0.93
+# Verify with: python -c "import cv2; print(cv2.getBuildInformation())" | findstr GUI
+opencv-python==5.0.0.93
+packaging==26.3
+pillow==12.3.0
+polars==1.44.1
+polars-runtime-32==1.44.1
+psutil==7.2.2
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+pyee==14.0.0
+PyGetWindow==0.0.9
+pylibsrtp==1.0.0
+pyOpenSSL==26.4.0
+pyparsing==3.3.2
+PyRect==0.2.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+python-multipart==0.0.32
+PyYAML==6.0.3
+requests==2.34.2
+setuptools==78.1.0
+six==1.17.0
+starlette==1.6.0
+sympy==1.14.0
+torch==2.13.0+cu126
+torchvision==0.28.0+cu126
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+ultralytics==8.4.135
+ultralytics-platform==0.1.20
+ultralytics-thop==2.1.6
+urllib3==2.7.0
+uvicorn==0.52.4
+watchfiles==1.2.0
+websockets==17.1
+
+# --- Optional: TensorRT engine acceleration (scripts/export_engine.py) ---
+# Not pinned here on purpose: the correct wheel depends on your installed
+# CUDA/driver version -- these are what matched this machine's torch==...+cu126
+# build (see README "Detection accuracy work" #11 for how that was found and
+# why the bare `tensorrt` package resolves wrong):
+#   pip install --extra-index-url https://pypi.nvidia.com/ \
+#       tensorrt-cu12 tensorrt-cu12-libs tensorrt-cu12-bindings
+# onnx/onnxslim and (on first export) nvidia-modelopt[onnx] are pulled in
+# automatically by ultralytics' export step -- budget ~25-30 min for that
+# first pull on a slow connection, it's a one-time cost.
+#
+# --- Optional: ONNX export/inference (used for a one-off accuracy check, not
+# by app/ itself; ultralytics can export to .onnx without onnxruntime, but
+# actually running that file needs it) ---
+# onnxruntime-gpu MUST be pinned below 1.29 on a CUDA 12 machine: 1.29+
+# requires CUDA 13 (cublasLt64_13.dll) and silently falls back to CPU rather
+# than failing to import, which then crashes on a device-mismatch error deep
+# inside inference instead of at load time.
+#   pip install onnx onnxslim "onnxruntime-gpu==1.20.2"

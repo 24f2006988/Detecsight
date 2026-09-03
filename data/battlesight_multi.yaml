@@ -1,0 +1,20 @@
+# BattleSight AR — VisDrone (aerial) + WiderPerson (ground-level personnel)
+# Same 4-class taxonomy as battlesight.yaml; WiderPerson only contributes to
+# class 0 (personnel), strengthening detection for helmet-cam / static-camera
+# sources that VisDrone's aerial-only imagery doesn't represent.
+
+path: G:/fusionsight/datasets   # absolute: relative "." resolves against cwd, not
+                                 # datasets_dir, since "." always exists on its own
+train:
+  - VisDrone/images/train
+  - WiderPerson/images/train
+val:
+  - VisDrone/images/val
+  - WiderPerson/images/val
+test: VisDrone/images/test     # WiderPerson's test split has no ground truth
+
+names:
+  0: personnel
+  1: two_wheeler
+  2: light_vehicle
+  3: heavy_vehicle

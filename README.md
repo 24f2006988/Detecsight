@@ -35,15 +35,25 @@ A YOLO26 detector fine-tuned to four classes — `personnel`, `two_wheeler`,
 (`class_id -1`) produced by an independent motion channel, so something that
 moves coherently is still reported even when the classifier has no name for it.
 
-Two checkpoints are loaded at once and selected per request via `?view=`:
+One checkpoint — `weights/best.pt`, trained on VisDrone + VisDrone test-dev +
+WiderPerson + AerialPerson at imgsz 1280 — serves both of the `?view=` values:
 
-| view | checkpoint | trained on |
+| view | classifier | differs by |
 |---|---|---|
-| `ground` (default) | `weights/best.pt` | VisDrone + VisDrone test-dev + WiderPerson + AerialPerson, imgsz 1280 |
-| `drone` | `weights/drone_best.pt` | VisDrone only — specialised for top-down aerial footage |
+| `ground` (default) | `weights/best.pt` | personnel confidence floor 0.10, ground motion-coherence threshold |
+| `drone` | same checkpoint | personnel floor 0.25, stricter coherence threshold |
 
-Both are served as TensorRT FP16 engines when a matching `.engine` exists, with
-automatic fallback to the `.pt` if the engine fails to load.
+**The views differ through config, not through weights.** There *was* a separate
+VisDrone-only checkpoint specialised for top-down footage; it was retired when
+this one beat it on the drone view's own home domain — VisDrone val personnel
+mAP50 0.3162 → 0.7064 ([`ENGINEERING_LOG.md`](ENGINEERING_LOG.md) §17). The
+mechanism is still there: drop a `weights/drone_best.pt` in and `?view=drone`
+picks it up, and `Detector.load()` falls back to the default model for any view
+without its own file. `/health` reports `views_loaded` so a client can tell which
+case it is rather than guessing.
+
+Served as a TensorRT FP16 engine when a matching `.engine` exists, with automatic
+fallback to the `.pt` if the engine fails to load.
 
 ## The detection cascade
 
@@ -163,9 +173,15 @@ managed explicitly.
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+bash scripts/fetch_weights.sh        # weights/best.pt from the latest release
 python scripts\check_gpu.py          # must print CUDA available: True
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+The checkpoint is a [release](../../releases) asset rather than a tracked file —
+20 MB of binary that changes wholesale on every retrain is what git stores worst.
+`fetch_weights.sh` verifies it against the published sha256, because a truncated
+checkpoint otherwise fails deep inside `torch.load` with an unhelpful error.
 
 Swagger UI at `/docs`. Do not use `--reload` — it reloads the model onto the GPU
 on every file change.
@@ -227,7 +243,7 @@ scripts/      dataset conversion/remapping, training, TensorRT export,
               annotation, benchmarking, burst diagnosis, promotion rubric
 tests/        standalone property tests
 data/         4-class dataset configs
-weights/      deployed checkpoints (ground + drone view)
+weights/      checkpoint lands here; fetched from a release, not tracked
 docs/         figures used above
 ```
 

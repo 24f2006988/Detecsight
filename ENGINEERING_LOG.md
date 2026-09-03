@@ -29,9 +29,12 @@ are not obvious from the README:
   with `pip install --force-reinstall torch==2.13.0+cu126
   torchvision==0.28.0+cu126 --extra-index-url https://download.pytorch.org/whl/cu126`.
 - The datasets are not vendored. Point ultralytics at wherever they live —
-  `yolo settings datasets_dir="<your datasets dir>"` — and `data/battlesight.yaml`
-  resolves against it. `data/battlesight_multi.yaml` and `data/battlesight_fpv.yaml`
-  name an absolute path outright and need that line edited to match your machine.
+  `yolo settings datasets_dir="<your datasets dir>"` — and all three yamls in
+  `data/` resolve against it. None of them contains an absolute path: each
+  anchors at VisDrone (a name that does not exist relative to cwd, which is what
+  makes ultralytics consult `datasets_dir`) and reaches sibling datasets with
+  `../`. `path: .` would not work — "." always exists, so it is kept as cwd and
+  the setting is never consulted.
 
 ## Dataset
 

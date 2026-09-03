@@ -233,9 +233,9 @@ docs/         figures used above
 
 Datasets, training runs and captured footage are not tracked — see
 `scripts/prepare_training.py` and `scripts/remap_visdrone.py` for how the
-training data is assembled. `data/battlesight_multi.yaml` and
-`data/battlesight_fpv.yaml` name an absolute datasets root; edit that `path:`
-line to match your machine before training.
+training data is assembled. The dataset yamls carry no absolute paths: they
+anchor at VisDrone and reach its siblings with `../`, so they resolve against
+whatever you set once with `yolo settings datasets_dir="<path>"`.
 
 ## License
 

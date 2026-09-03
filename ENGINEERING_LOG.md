@@ -1,44 +1,37 @@
-# BattleSight AR — Detection Service
+# DetecSight — Engineering Log
 
-YOLO26 fine-tuned on VisDrone (10 classes collapsed to 4 tactical classes), served
-from a FastAPI backend that does inference, multi-feed tracking with a
-moving-vs-static filter, and launches training jobs.
+The fix-by-fix record behind [`README.md`](README.md): what broke, how it was
+measured, what was changed, and — where it matters most — what was tried and
+rejected. It is kept in chronological order rather than tidied into a narrative,
+so the sections near the end supersede earlier ones on the same subject.
 
-Built and verified on: Windows 11, RTX 4060 Laptop (8 GB), Python 3.12.10,
-torch 2.13.0+cu126, ultralytics 8.4.135, fastapi 0.141.1.
+**Read it with that in mind.** Section 16 supersedes sections 14 and 15: those
+two were tuned against a mistaken description of the `v10`/`v11` test clips, and
+their diagnosis was wrong. Where a bullet is struck through, the strikethrough is
+the correction and the original text is kept underneath deliberately — a log that
+silently deletes its wrong turns is not evidence of anything.
 
-## Layout
+Measured throughout on: Windows 11, RTX 4060 Laptop (8 GB), Python 3.12.10,
+torch 2.13.0+cu126, ultralytics 8.4.135, fastapi 0.141.1. Every latency number
+here is from that machine; see §19c before comparing any of them.
 
-```
-fusionsight/
-├─ .venv/                     # torch 2.13.0+cu126 lives here
-├─ datasets/VisDrone/         # 6471 train / 548 val / 1610 test
-│  └─ labels_visdrone_raw/    # untouched 10-class originals (remap source)
-├─ data/battlesight.yaml      # 4-class dataset config
-├─ scripts/                   # check_gpu, remap_visdrone, train, test_stream,
-│                              # annotate_video, annotate_screen
-├─ tests/                     # make_clips, test_feed_isolation, assets/
-├─ runs/detect/<name>/        # training output
-├─ weights/best.pt            # deployed model
-└─ app/                       # config, schemas, detector, trainer, routers, main
-```
+## Setup
 
-## Setup (already done in this checkout)
+Installation, serving and the API contract are in [`README.md`](README.md) —
+this file does not restate them. Two environment notes that cost real time and
+are not obvious from the README:
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-yolo settings datasets_dir="G:\fusionsight\datasets"
-python scripts\check_gpu.py          # must print CUDA available: True
-```
-
-`requirements.txt` carries a `--extra-index-url` for PyTorch's CUDA 12.6 wheel
-index, so this single install resolves the pinned `torch==2.13.0+cu126` /
-`torchvision==0.28.0+cu126` GPU builds directly -- no separate pre-install step
-needed. (If `check_gpu.py` ever reports `CUDA available: False`, something
-resolved a CPU wheel instead -- reinstall with
-`pip install --force-reinstall torch==2.13.0+cu126 torchvision==0.28.0+cu126 --extra-index-url https://download.pytorch.org/whl/cu126`.)
+- `requirements.txt` carries an `--extra-index-url` for PyTorch's CUDA 12.6
+  wheel index, so a single `pip install -r requirements.txt` resolves the pinned
+  `torch==2.13.0+cu126` / `torchvision==0.28.0+cu126` GPU builds directly, with
+  no separate pre-install step. If `scripts/check_gpu.py` reports
+  `CUDA available: False`, something resolved a CPU wheel instead — reinstall
+  with `pip install --force-reinstall torch==2.13.0+cu126
+  torchvision==0.28.0+cu126 --extra-index-url https://download.pytorch.org/whl/cu126`.
+- The datasets are not vendored. Point ultralytics at wherever they live —
+  `yolo settings datasets_dir="<your datasets dir>"` — and `data/battlesight.yaml`
+  resolves against it. `data/battlesight_multi.yaml` and `data/battlesight_fpv.yaml`
+  name an absolute path outright and need that line edited to match your machine.
 
 ## Dataset
 
@@ -74,15 +67,11 @@ yolo val model=runs\detect\battlesight_v1\weights\best.pt data=data\battlesight.
 copy runs\detect\battlesight_v1\weights\best.pt weights\best.pt
 ```
 
-## Running the API
+## API surface, in full
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Swagger UI at `/docs`. Do not use `--reload` — it reloads the model onto the GPU
-on every file change and can orphan a running training subprocess.
+[`README.md`](README.md) lists the endpoints that matter to a client; this is the
+complete set, including the state-management and training-control routes it
+leaves out.
 
 | endpoint | purpose |
 |---|---|
@@ -1650,16 +1639,15 @@ reason the parallel result is trustworthy at all.
 
 ## Tests
 
-```powershell
-python scripts\check_gpu.py                        # CUDA visible
-python tests\make_clips.py                         # build static/moving clips
-$env:PYTHONPATH="."; python tests\test_history_cap.py   # bounded LRU history
-python tests\test_feed_isolation.py                # two feeds, independent IDs
-python scripts\test_stream.py tests\assets\moving.mp4   # 0 moving on a static clip
-python scripts\test_stream.py tests\assets\drone_pan.mp4
-```
+The current suite and how to run it are in [`README.md`](README.md). Two notes
+that belong here rather than there:
 
-`test_feed_isolation.py` and `test_stream.py` need the API running.
+- `tests/test_feed_isolation.py` and `scripts/test_stream.py` need the API
+  already running; every other test is standalone and CPU-only.
+- `tests/make_clips.py` regenerates the synthetic static/pan clips the motion
+  tests use, so they are not committed. VisDrone-DET has no consecutive frames,
+  which is why the motion filter is verified against synthetic pans in the first
+  place — see the limitation below.
 
 ## Measured on this machine
 

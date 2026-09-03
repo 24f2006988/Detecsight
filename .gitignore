@@ -24,9 +24,9 @@ weights/*
 *.engine
 *.torchscript
 
-# Keep the two deployed checkpoints so a fresh clone can run inference
-!weights/best.pt
-!weights/drone_best.pt
+# Checkpoints are published as GitHub release assets, not tracked here -- they
+# are 20 MB binaries that change wholesale on every retrain, which is what git
+# stores worst. Fetch with: scripts/fetch_weights.sh
 
 # --- Generated runs / logs / benchmark output ---
 runs/

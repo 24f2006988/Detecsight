@@ -2,9 +2,22 @@
 # Download CrowdHuman from the author's Hugging Face mirror (sshao0516/CrowdHuman).
 # The official crowdhuman.org Google Drive links 404 as of 2026-09-03.
 # Resumable: re-run this script to continue any partial file.
+#
+#   scripts/fetch_crowdhuman.sh /d/datasets
+#   BATTLESIGHT_DATASETS=/d/datasets scripts/fetch_crowdhuman.sh
+#
+# The datasets root is required rather than defaulted: this pulls ~13 GB, and
+# writing that to the wrong drive is expensive to undo.
 set -u
 BASE="https://huggingface.co/datasets/sshao0516/CrowdHuman/resolve/main"
-DEST="/g/fusionsight/datasets/CrowdHuman_raw"
+DATASETS="${1:-${BATTLESIGHT_DATASETS:-}}"
+if [ -z "$DATASETS" ]; then
+    echo "usage: $0 <datasets-root>   (or set BATTLESIGHT_DATASETS)" >&2
+    echo "  e.g. $0 /d/datasets" >&2
+    exit 2
+fi
+DEST="$DATASETS/CrowdHuman_raw"
+mkdir -p "$DEST" || exit 1
 cd "$DEST" || exit 1
 
 # filename:expected_bytes  (sizes read from the HF API tree, 2026-09-03)

@@ -23,18 +23,22 @@
 # AerialPerson's TRAIN labels DO carry vehicle pseudo-labels (see
 # scripts/pseudo_label_vehicles.py and README 16g) -- without them its ~258,000
 # unlabelled cars would train the model to treat aerial vehicles as background.
+#
+# Paths are anchored at VisDrone and reach its siblings with `../`, so this file
+# names no drive and no absolute directory. It resolves against whatever
+# `yolo settings datasets_dir` is set to -- set that once per machine.
 
-path: G:/fusionsight/datasets
+path: VisDrone
 
 train:
-  - VisDrone/images/train
-  - VisDrone/images/test
-  - WiderPerson/images/train
-  - AerialPerson/images/train
+  - images/train
+  - images/test
+  - ../WiderPerson/images/train
+  - ../AerialPerson/images/train
 
 val:
-  - VisDrone/images/val
-  - WiderPerson/images/val
+  - images/val
+  - ../WiderPerson/images/val
 
 names:
   0: personnel

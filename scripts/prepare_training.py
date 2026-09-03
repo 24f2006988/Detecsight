@@ -15,14 +15,68 @@ It never starts training itself -- it prints the command. Launching a multi-hour
 GPU job is the user's call, not a side effect of a status check.
 """
 import argparse
+import os
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DATASETS = REPO / "datasets"
 YAML_PATH = REPO / "data" / "battlesight_fpv.yaml"
+
+# The dataset yamls are anchored to VisDrone and reach its siblings with `../`,
+# so the generated file carries no absolute path at all -- see _yaml_entry().
+# VisDrone is the anchor because it is the only source every yaml uses.
+ANCHOR = "VisDrone"
+
+
+def _datasets_root() -> Path:
+    """Where the datasets actually live.
+
+    Deliberately NOT repo-relative. They are large, shared between projects and
+    read across a folder boundary, so the location is a property of the machine
+    rather than of this checkout. Resolution order:
+
+      1. BATTLESIGHT_DATASETS, for an explicit one-off override.
+      2. ultralytics' own `datasets_dir` setting -- which is already what
+         data/battlesight.yaml resolves its relative `path:` against, so
+         honouring it here keeps every yaml pointing at the same root.
+      3. REPO/datasets, only as a last resort if neither is set.
+
+    Set it once with:  yolo settings datasets_dir="<path>"
+    """
+    env = os.getenv("BATTLESIGHT_DATASETS")
+    if env:
+        return Path(env)
+    try:
+        from ultralytics.utils import SETTINGS
+        configured = SETTINGS.get("datasets_dir")
+        if configured:
+            return Path(configured)
+    except Exception:  # noqa: BLE001
+        pass  # ultralytics not importable or settings unreadable; fall through
+    return REPO / "datasets"
+
+
+def _yaml_entry(rel: str) -> str:
+    """Turn a datasets-root-relative path into one relative to ANCHOR.
+
+    ultralytics resolves a yaml's `path:` against its datasets_dir when the
+    value does not exist relative to cwd, then joins each split onto it and
+    calls .resolve() -- which collapses `..` normally. So anchoring at VisDrone
+    and climbing back out with `../` reaches every sibling dataset without ever
+    naming a drive or an absolute directory, and the file stays valid on any
+    machine whose datasets_dir is set.
+
+    Note `path: .` does NOT work for this: "." always exists relative to cwd,
+    so ultralytics keeps it and never consults datasets_dir. Verified against
+    check_det_dataset() in ultralytics 8.4.135.
+    """
+    prefix = ANCHOR + "/"
+    return rel[len(prefix):] if rel.startswith(prefix) else "../" + rel
+
+
+DATASETS = _datasets_root()
 
 # (label, path relative to DATASETS, split, note)
 SOURCES = [
@@ -76,6 +130,10 @@ YAML_HEADER = """\
 # AerialPerson's TRAIN labels DO carry vehicle pseudo-labels (see
 # scripts/pseudo_label_vehicles.py and README 16g) -- without them its ~258,000
 # unlabelled cars would train the model to treat aerial vehicles as background.
+#
+# Paths are anchored at VisDrone and reach its siblings with `../`, so this file
+# names no drive and no absolute directory. It resolves against whatever
+# `yolo settings datasets_dir` is set to -- set that once per machine.
 """
 
 
@@ -177,10 +235,10 @@ def main():
     if not present["train"] or not present["val"]:
         raise SystemExit("\nNo usable train or val sources; nothing to write.")
 
-    lines = [YAML_HEADER, "path: {}".format(DATASETS.as_posix()), "", "train:"]
-    lines += ["  - {}".format(p) for p in present["train"]]
+    lines = [YAML_HEADER, "path: {}".format(ANCHOR), "", "train:"]
+    lines += ["  - {}".format(_yaml_entry(p)) for p in present["train"]]
     lines += ["", "val:"]
-    lines += ["  - {}".format(p) for p in present["val"]]
+    lines += ["  - {}".format(_yaml_entry(p)) for p in present["val"]]
     lines += ["", "names:", "  0: personnel", "  1: two_wheeler",
               "  2: light_vehicle", "  3: heavy_vehicle", ""]
     YAML_PATH.write_text("\n".join(lines), encoding="utf-8")

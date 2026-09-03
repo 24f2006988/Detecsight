@@ -3,15 +3,21 @@
 # class 0 (personnel), strengthening detection for helmet-cam / static-camera
 # sources that VisDrone's aerial-only imagery doesn't represent.
 
-path: G:/fusionsight/datasets   # absolute: relative "." resolves against cwd, not
-                                 # datasets_dir, since "." always exists on its own
+# Anchored at VisDrone and reaching its sibling datasets with `../`, so this
+# file names no drive and no absolute directory -- it resolves against whatever
+# `yolo settings datasets_dir` points at. Set that once per machine.
+#
+# `path: .` does NOT work here: "." always exists relative to cwd, so
+# ultralytics keeps it and never consults datasets_dir. A name that does not
+# exist in cwd (like VisDrone) is what makes it fall through to the setting.
+path: VisDrone
 train:
-  - VisDrone/images/train
-  - WiderPerson/images/train
+  - images/train                 # VisDrone
+  - ../WiderPerson/images/train
 val:
-  - VisDrone/images/val
-  - WiderPerson/images/val
-test: VisDrone/images/test     # WiderPerson's test split has no ground truth
+  - images/val                   # VisDrone
+  - ../WiderPerson/images/val
+test: images/test                # VisDrone; WiderPerson's test split has no ground truth
 
 names:
   0: personnel

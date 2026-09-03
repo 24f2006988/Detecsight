@@ -619,8 +619,9 @@ directly (`fp16=self.args.quantize == 16`, and `quantize` defaults to unset).
 Measured FP16 and INT8 for real -- not from documentation, from
 `model.val()` against `data/battlesight.yaml` (VisDrone-only val, the
 aerial-relevant set), imgsz 1280, batch 1 (matching how this service actually
-calls the model), warmed up (a cold first call on this GPU is ~2x a
-steady-state one -- see the note in `fusionsight-detection-baseline` memory).
+calls the model), warmed up. Warming matters more than it sounds: this GPU
+idles at 270 MHz, so a cold first call runs about 2x a steady-state one and a
+short benchmark that skips the warm-up reports roughly double the true latency.
 Both the raw PyTorch checkpoint and a built TensorRT engine (§5b) were
 measured per precision:
 

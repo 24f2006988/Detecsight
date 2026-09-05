@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + CPU property tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # opencv-python links against libGL, which a bare Ubuntu runner does not
+      # ship. Fixed here rather than by swapping in opencv-python-headless as a
+      # dependency: the two packages unpack into the same cv2/ directory, so a
+      # headless entry anywhere in the dependency tree eventually reaches a
+      # developer machine and silently kills every preview window.
+      - name: Install libGL for opencv-python
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      # `.[dev]` is numpy, OpenCV, PyYAML, pytest and ruff -- no torch, no
+      # ultralytics, no CUDA. That is the whole point: the motion, coherence and
+      # overlay filters import nothing heavier than OpenCV, and this job fails
+      # if that ever stops being true.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Tests
+        run: pytest -v
+
+      # A stray `import torch` in the filter layer would still pass the tests
+      # above (by pulling torch in transitively on a machine that has it) while
+      # making a CPU-only install impossible. Assert the boundary directly.
+      - name: Assert the CPU layer stays free of the model stack
+        run: |
+          python - <<'PY'
+          import sys
+          import app.config, app.motion_filter, app.overlay_mask  # noqa: F401
+          heavy = sorted({m for m in ("torch", "torchvision", "ultralytics") if m in sys.modules})
+          if heavy:
+              sys.exit(f"the pure-CV layer pulled in {heavy}; keep it importable without the model stack")
+          print("CPU layer clean: no torch, torchvision or ultralytics")
+          PY

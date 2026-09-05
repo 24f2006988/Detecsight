@@ -52,6 +52,19 @@ def parse_args():
                         "albumentations was absent from this venv until that profile "
                         "was added, so every earlier checkpoint had NO such "
                         "augmentation at all, not merely the ultralytics defaults.")
+    p.add_argument("--vram-fraction", type=float, default=None,
+                   help="Hard-cap this process at FRACTION of total VRAM, so an "
+                        "over-large batch fails with a clean CUDA OOM instead of "
+                        "silently spilling into shared system RAM. Windows WDDM "
+                        "lets cudaMalloc succeed past the physical 8 GB by paging "
+                        "over PCIe, which is why batch 4 at imgsz 1280 'fits' while "
+                        "reporting ~10.2 G reserved -- and why it crawls at 1.6 it/s. "
+                        "PYTORCH_CUDA_ALLOC_CONF=expandable_segments is NOT available "
+                        "here (torch 2.13 prints 'not supported on this platform' on "
+                        "Windows), so this cap is the only in-process lever. Note the "
+                        "fraction is of TOTAL VRAM, not free VRAM -- the desktop "
+                        "compositor holds ~1.4 G, so 0.85 of 8 G is already optimistic "
+                        "if a browser is open.")
     p.add_argument("--log-file", default=None,
                    help="Console log destination (default: logs/<name>_<timestamp>.log). "
                         "Captures the full console output -- config dump, every epoch's "
@@ -63,6 +76,26 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.vram_fraction is not None:
+        import torch
+        if not torch.cuda.is_available():
+            raise SystemExit("--vram-fraction needs CUDA; none is available.")
+        dev = 0 if args.device.isdigit() else args.device
+        total = torch.cuda.get_device_properties(dev).total_memory
+        free = torch.cuda.mem_get_info(dev)[0]
+        cap = args.vram_fraction * total
+        torch.cuda.set_per_process_memory_fraction(args.vram_fraction, dev)
+        print(f"VRAM cap {cap / 2**30:.2f} GiB "
+              f"({args.vram_fraction:.2f} of {total / 2**30:.2f} GiB total); "
+              f"{free / 2**30:.2f} GiB actually free right now")
+        if cap > free:
+            # Not fatal: the cap still stops the WDDM spill, and whatever is
+            # holding that memory may exit. But a cap above free VRAM is not the
+            # cap the operator thinks they set, and a mid-run OOM three hours in
+            # is expensive, so say so plainly now.
+            print("  !! cap exceeds free VRAM -- close other GPU consumers "
+                  "(uvicorn, browsers) or lower --vram-fraction")
 
     console_logger = None
     if not args.no_log:

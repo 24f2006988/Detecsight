@@ -88,6 +88,23 @@ SOURCES = [
      "UAV personnel over natural terrain -- the missing domain"),
     ("CrowdHuman train", "CrowdHuman/images/train", "train",
      "15000, dense occluded ground-level personnel"),
+    # SARD, added 2026-09-05 after log section 21. Prone and non-upright
+    # personnel seen from a UAV over grass, forest shade and quarries -- the
+    # pose distribution nothing else in this mix contains. Fine-tuning on it
+    # ALONE took its own held-out recall 0.143 -> 0.870 and then failed every
+    # promotion criterion by catastrophic forgetting (personnel mAP50
+    # 0.706 -> 0.221). It belongs in the blend, not on its own: at 4,041 of
+    # ~37,700 images it cannot dominate, and every other class keeps receiving
+    # positive examples throughout.
+    #
+    # SARD's val AND test splits are deliberately absent from the val list, for
+    # the same reason AerialPerson's is: the val set must stay byte-identical to
+    # battlesight_multi.yaml's, or every mAP figure recorded in the log stops
+    # being comparable. SARD performance is tracked separately and explicitly,
+    # with scripts/eval_size_recall.py against SARD/images/test -- which is
+    # where the 0.143 baseline was measured and where the verdict is read.
+    ("SARD train", "SARD/images/train", "train",
+     "4041 tiles, prone/non-upright personnel from a UAV -- the missing pose"),
     ("VisDrone val", "VisDrone/images/val", "val", "548"),
     ("WiderPerson val", "WiderPerson/images/val", "val", "1000"),
     # AerialPerson's val split is DELIBERATELY NOT in this list. Its labels are

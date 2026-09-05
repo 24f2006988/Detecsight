@@ -36,6 +36,7 @@ train:
   - ../WiderPerson/images/train
   - ../AerialPerson/images/train
   - ../CrowdHuman/images/train
+  - ../SARD/images/train
 
 val:
   - images/val

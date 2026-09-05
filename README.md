@@ -1,64 +1,163 @@
 # DetecSight
 
-Real-time person and vehicle detection for drone and helmet-camera video, served
-over FastAPI. Built for an AR situational-awareness overlay: the system tells a
-human operator what is in frame and what is moving.
+**Real-time detection and tracking of people and vehicles in drone and
+body-worn camera video.** A YOLO26 detector, an ego-motion-compensated motion
+channel and a HUD-overlay filter, served over FastAPI as a TensorRT FP16 engine
+at 6.95 ms/frame.
 
-![Motion-filter false positives before and after the chronic-noise gates](docs/motion_before_after.jpg)
+[![CI](https://github.com/24f2006988/Detecsight/actions/workflows/ci.yml/badge.svg)](https://github.com/24f2006988/Detecsight/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-*Same three frames, before and after the motion filter's chronic-noise gates.
-Purple `moving_object` boxes are the class-agnostic motion channel; green are
-classified `personnel`. The phantom purple boxes on foliage and platform edge
-are gone while the classified detections carry through untouched — the track IDs
-(`#91`, `#64`, `#62`, `#45`, `#157`) are the same before and after. That is the
-property the filter is held to: it may only remove what it can prove is noise,
-and it fails open when it cannot prove it.*
+![Phantom detections on HUD-overlaid FPV footage, before and after the overlay filter](docs/hud_overlay_before_after.gif)
 
-**Scope:** operator situational awareness only — not fire control, not automated
-targeting, not combatant classification. The model detects four generic object
-classes and flags coherent motion; every decision stays with the person wearing
-the display.
+*The same eleven seconds of FPV drone footage, run twice. Left: 31.3 phantom
+`light_vehicle` boxes per frame on a clip containing no vehicles. Right: the
+same clip with the overlay filter on. Same weights, same thresholds — the only
+difference is the filter.*
 
-**Provenance:** this work was originally built as part of a Smart India
-Hackathon project, published under the team lead's account as
-[Fusion-Sight](https://github.com/soumik15630m/Fusion-Sight). The engineering in
-`app/`, `scripts/` and `tests/` is mine; this repository is that work under my
-own name, with a fresh history and a rewritten README. The two repositories have
-diverged since — this one is where development continues.
+## Try it without an NVIDIA card
+
+```bash
+docker build -t detecsight .
+docker run -p 8000:8000 detecsight
+```
+
+Swagger UI at `http://localhost:8000/docs`; `POST /detect` a JPEG and you get
+boxes back. The image is CPU-only and honest about it: roughly **709 ms** per
+1280 px frame, against 6.95 ms for the TensorRT FP16 engine on a GPU. It is a
+way to see the system work, not a way to deploy it.
 
 ---
 
-## What it does
+## The overlay filter
 
-A YOLO26 detector fine-tuned to four classes — `personnel`, `two_wheeler`,
-`light_vehicle`, `heavy_vehicle` — plus a class-agnostic `moving_object`
-(`class_id -1`) produced by an independent motion channel, so something that
-moves coherently is still reported even when the classifier has no name for it.
+One FPV clip produced **54,658 `light_vehicle` boxes across 1,746 frames** —
+31.3 per frame, on footage containing no vehicles at all. A spatial heatmap of
+those boxes reproduced the HUD exactly: one box per dash of each dotted reticle
+line, one per character of the telemetry string, median box 9×9 px.
 
-One checkpoint — `weights/best.pt`, trained on VisDrone + VisDrone test-dev +
-WiderPerson + AerialPerson at imgsz 1280 — serves both of the `?view=` values:
+The earlier diagnosis had been "no training coverage of this camera angle" and
+the proposed fix was more training data. Both were wrong. **The boxes were never
+on the scene.**
 
-| view | classifier | differs by |
+The fix that works is not appearance-based but ***attachment*-based**. A painted
+glyph holds its position in image space while the world slides underneath it; a
+real object is attached to the world and travels across the frame as the camera
+pans. So the filter learns which grid cells keep producing **small** detections
+**while the camera is independently established to be moving** — reusing the ego
+estimate the motion pass already computes, at no extra cost.
+
+| | before | after |
 |---|---|---|
-| `ground` (default) | `weights/best.pt` | personnel confidence floor 0.10, ground motion-coherence threshold |
-| `drone` | same checkpoint | personnel floor 0.25, stricter coherence threshold |
+| phantom `light_vehicle` | 54,658 (31.3/frame) | **6,713 (3.84/frame)** — −87.7% |
+| control clip | — | **byte-identical** output |
 
-**The views differ through config, not through weights.** There *was* a separate
-VisDrone-only checkpoint specialised for top-down footage; it was retired when
-this one beat it on the drone view's own home domain — VisDrone val personnel
-mAP50 0.3162 → 0.7064 ([`ENGINEERING_LOG.md`](ENGINEERING_LOG.md) §17). The
-mechanism is still there: drop a `weights/drone_best.pt` in and `?view=drone`
-picks it up, and `Detector.load()` falls back to the default model for any view
-without its own file. `/health` reports `views_loaded` so a client can tell which
-case it is rather than guessing.
+It never masks a large box, however persistent — that is what protects a target
+a drone is deliberately holding centred in frame — and past
+`OVERLAY_MAX_FRACTION` it disables itself entirely rather than risk blinding the
+detector. Both properties are asserted in `tests/test_overlay_mask.py`.
 
-Served as a TensorRT FP16 engine when a matching `.engine` exists, with automatic
-fallback to the `.pt` if the engine fails to load.
+A detail worth keeping: **rolling-median burst detection reports zero bursts on
+this failure**, because a constant per-frame error is not a spike. Burst counts
+alone will never find this class of bug.
 
-## The detection cascade
+## How a checkpoint is allowed to ship
 
-`Detector.track()` is five stages, and each one exists because of a measured
-failure rather than a guess:
+Nothing here is promoted because its mAP went up. It ships because it clears a
+gate, and the gate is one command:
+
+```bash
+python scripts/evaluate.py                                  # what is deployed
+python scripts/evaluate.py runs/detect/<run>/weights/best.pt  # a candidate
+```
+
+Four criteria, PASS/FAIL, non-zero exit on failure: no overall mAP50 regression,
+no `personnel` regression, no class silently collapsed to zero, and a recall
+floor that catches a degenerate model predicting almost nothing. Alongside them
+it reports size-stratified recall — **the metric that actually limits this
+system**, and the one overall mAP50 hides:
+
+![Recall against target size, over the instance histogram](docs/size_recall.png)
+
+Near targets are effectively solved at 0.94. All the loss is distance, and
+distance is not rare: 41% of the people in ground-level validation are under
+32 px, and fewer than half of those are found. Raising resolution does not fix
+it — 1280→1536 buys +0.4% detections for +46% cost, and the *large* buckets get
+worse, because above the trained size the model is off-distribution for its own
+scale priors. The remaining lever is data.
+
+### What the gate has actually decided
+
+| candidate | measured | decision |
+|---|---|---|
+| `battlesight_fpv` vs. the then-deployed checkpoint (blended val) | mAP50 0.5910 → **0.6274**, personnel 0.6785 → **0.7064**, recall 0.540 → 0.570, no class collapsed | **promoted** |
+| VisDrone-only drone specialist, judged on its *own* home domain (VisDrone val) | overall 0.5036 → 0.6274, personnel **0.3162 → 0.7064** with the blended checkpoint | **retired** — the specialist lost on the domain it was specialised for |
+| TensorRT INT8 engine (VisDrone val) | 4.23 ms vs FP16's 6.95 ms, but mAP50 0.5608 → 0.5189 and recall 0.5303 → 0.4789 | **rejected** — at ~10 fps, 2.7 ms buys nothing visible; 5 points of recall is visible |
+| Far-field second pass, on by default | +4–8% more people found, but p90 48.5 ms against a 26.9 ms median | **kept, off by default** — the jitter would make an AR overlay stutter |
+
+The rejections are the interesting rows. A full list of what was tried and
+abandoned, each with the number that killed it, is at the top of
+[`ENGINEERING_LOG.md`](ENGINEERING_LOG.md).
+
+## Results
+
+Every number below has a command in [`docs/REPRODUCE.md`](docs/REPRODUCE.md).
+
+| | | reproduce |
+|---|---|---|
+| Deployed checkpoint | mAP50 **0.638**, mAP50-95 0.389 (blended val) | `scripts/evaluate.py` |
+| Inference resolution 640→1280, conf 0.35→0.25 | VisDrone val mAP50 0.5046 → 0.5623, recall 0.4855 → 0.5262 | `scripts/eval_rubric.py` |
+| PyTorch FP32 → TensorRT FP16 | 13.3 ms → **6.95 ms**/frame | `scripts/bench_imgsz.py` |
+| HUD overlay filter | 54,658 → **6,713** phantom boxes, −87.7% | `scripts/diagnose_bursts.py` |
+| Personnel floor 0.20 → 0.10, chosen on **F2 not F1** | recall 0.636 → **0.725** for 5.7 pts of precision | `scripts/eval_size_recall.py` |
+| Motion stage moved off the critical path | 46.4 → **24.6 ms** median, detection counts byte-identical | `BATTLESIGHT_MOTION_PARALLEL=0/1` |
+| Size-stratified recall | <16 px **0.187** · 16–32 0.622 · >96 0.940 | `scripts/eval_size_recall.py` |
+
+F2 rather than F1 is a deliberate choice: F1 weights precision and recall
+equally, which contradicts the principle every gate in this system is built on.
+A missed contact is the failure that matters; a phantom is a nuisance.
+
+Inference resolution was the first real fix, and the least clever one: the
+deployed checkpoint had been running at imgsz 640 with a 0.35 confidence floor,
+both inherited defaults, neither measured.
+
+![Aerial detection at imgsz 640/conf 0.35 versus 1280/conf 0.25](docs/aerial_before_after.jpg)
+
+*Same frame, imgsz 640 → 1280 and conf 0.35 → 0.25. The parked two-wheelers
+under the awnings and the pedestrians on the near pavement are recovered rather
+than invented — they are visible in the source frame. Note the false positive on
+the blue roof at bottom-left: the lower floor is not free.*
+
+**Latency on this machine varies about 3× run to run** — the same unchanged path
+has measured 25, 46 and 74 ms in one session. Only warmed, back-to-back,
+within-run comparisons are trustworthy, and the figures above are all taken that
+way.
+
+## Tracking in dense scenes
+
+![Tracked personnel with IDs through a crowded pedestrian crossing](docs/crowd_tracking.gif)
+
+*A pedestrian crossing at rush hour: track IDs and the moving flag, held through
+mutual occlusion. Median 19 tracked people per frame, peaking at 78, across
+2,281 unique track IDs over the clip.*
+
+This is also where the system's limits are clearest, and
+[`ENGINEERING_LOG.md`](ENGINEERING_LOG.md) §20 records them rather than the
+highlight: the near field is tracked well and the standing crowd behind it —
+several hundred people at 10–25 px — is largely missed, exactly as the
+size-recall curve predicts. Over half of all returned boxes are larger than
+96 px in a scene dominated by small people.
+
+## How it works
+
+Four classes — `personnel`, `two_wheeler`, `light_vehicle`, `heavy_vehicle` —
+plus a class-agnostic `moving_object` (`class_id -1`) from an independent motion
+channel, so something moving coherently is still reported when the classifier
+has no name for it.
+
+`Detector.track()` is five stages, and each exists because of a measured failure
+rather than a guess:
 
 1. **Motion channel** (`app/motion_filter.py`) — background subtraction with
    ego-motion compensation. A frame-to-frame affine transform is fit by
@@ -66,86 +165,36 @@ failure rather than a guess:
    into the current one so static structure differences away, and stored track
    histories are warped by the same transform so trajectory *straightness*
    measures the object rather than the camera. Four independent gates suppress
-   chronic noise (parallax residual, MOG2 foreground fraction, blob-density with
-   a cooldown, branch-selection flicker).
+   chronic noise.
 2. **Illumination-vs-structure discriminator** — separates a light (muzzle
    flash, headlight, glare) from a real object in a single frame by testing
    whether the change is a uniform brightness shift or preserves structure under
    z-scoring. A fast path reports targets visible for only two frames, which the
    four-frame coherence requirement could never do.
-3. **Classification** — full-frame inference, plus a strided far-field second
-   pass that re-examines wherever the small boxes are, since recall collapses
-   with target size.
-4. **Static overlay rejection** (`app/overlay_mask.py`) — removes burned-in
-   HUD/OSD glyphs. See below.
+3. **Classification** — full-frame inference, plus an optional strided far-field
+   second pass that re-examines wherever the small boxes already are.
+4. **Static overlay rejection** (`app/overlay_mask.py`) — the HUD filter above.
 5. **Reference-image exclusion** (`app/exclusion.py`) — upload one photo of an
-   object and matching detections are dropped, using a MobileNetV3 embedding and
+   object and matching detections are dropped, via a MobileNetV3 embedding and
    cosine similarity. No retraining, no new class.
 
-Every stage **fails open**. For a situational-awareness system a phantom contact
-is a nuisance and a suppressed real one is unacceptable, so any gate that cannot
-judge passes the detection through.
+**Every stage fails open.** Any gate that cannot judge passes the detection
+through. A phantom contact is a nuisance; a suppressed real one is the failure
+this system must not have.
 
-## Results
+![Motion-filter false positives before and after the chronic-noise gates](docs/motion_before_after.jpg)
 
-**Inference resolution was the first real fix.** The deployed checkpoint was
-running at imgsz 640 with a 0.35 confidence floor — both inherited defaults,
-neither measured. VisDrone targets are routinely under 32 px, which 640 destroys
-before the head ever sees them.
+*The motion channel's chronic-noise gates, before and after. Purple
+`moving_object` boxes are the class-agnostic motion channel; green are
+classified `personnel`. The phantom purple boxes on foliage and platform edge
+are gone while the classified detections carry through untouched — the track IDs
+(`#91`, `#64`, `#62`, `#45`, `#157`) are identical before and after. That is the
+property the filter is held to: it may only remove what it can prove is noise.*
 
-![Aerial detection at imgsz 640/conf 0.35 versus 1280/conf 0.25](docs/aerial_before_after.jpg)
-
-*Same frame, imgsz 640 → 1280 and conf 0.35 → 0.25. The parked two-wheelers
-under the awnings and the pedestrians on the near pavement are recovered rather
-than invented — they are visible in the source frame. Note the false positive on
-the blue roof at bottom-left: the lower floor is not free. On VisDrone val this
-moved mAP50 0.5046 → 0.5623 and recall 0.4855 → 0.5262.*
-
-**TensorRT FP16 adopted, INT8 measured and rejected** (VisDrone val, imgsz 1280,
-batch 1, warmed up, ground checkpoint):
-
-| | PyTorch FP32 | TensorRT FP16 | TensorRT INT8 |
-|---|---|---|---|
-| mAP50 | 0.5631 | 0.5608 | 0.5189 |
-| recall | 0.5260 | 0.5303 | 0.4789 |
-| inference | 13.3 ms | **6.95 ms** | 4.23 ms |
-
-INT8 is nearly 2× faster again and costs ~4 points of mAP50 and 5 of recall —
-not a trade this system can make.
-
-**Burned-in HUD glyphs were the dominant error source on real FPV footage.** One
-clip produced 54,658 `light_vehicle` boxes across 1,746 frames — 31.3 per frame,
-on footage containing no vehicles at all. A spatial heatmap of those boxes
-reproduced the HUD exactly: one box per dash of each dotted reticle line, one per
-character of the telemetry string, median box 9×9 px.
-
-The fix is not appearance-based but *attachment*-based: a painted glyph holds its
-image-space position while the world slides underneath it, whereas a real object
-is attached to the world and travels across the frame as the camera pans. So the
-filter learns which grid cells keep producing **small** detections **while the
-camera is established to be moving**, reusing the motion pass's existing ego
-estimate.
-
-| | before | after |
-|---|---|---|
-| phantom `light_vehicle` | 54,658 (31.3/frame) | **6,713 (3.84/frame)** — −87.7% |
-| unaffected clip | — | byte-identical output |
-
-**Confidence floor retuned on F2, not F1.** The blended validation set hid
-ground-level headroom because aerial instances dominate by count. Split by
-domain, dropping the ground-view personnel floor from 0.20 to 0.10 moved recall
-0.636 → 0.725 for 5.7 points of precision — the right side of the trade when a
-missed contact is the failure that matters.
-
-**Deployed ground checkpoint:** mAP50 0.638, mAP50-95 0.389 on the blended
-validation set.
-
-**Live feed:** ~100 ms round trip (≈10 fps) end to end at 1080p over WebSocket on
-loopback, of which 50–85 ms is server inference. `/health` answers in ~1.2 ms
-while a feed is running, because inference is dispatched off the event loop.
-
-Full fix-by-fix history, including the approaches that were tried and rejected,
-is in [`ENGINEERING_LOG.md`](ENGINEERING_LOG.md).
+One checkpoint serves both `?view=` values, differing only through config
+(personnel confidence floor, motion-coherence threshold) — see the retirement
+row above. Drop a `weights/drone_best.pt` in and `?view=drone` picks it up
+again; `/health` reports `views_loaded` so a client can tell which case it is.
 
 ## API
 
@@ -159,103 +208,127 @@ is in [`ENGINEERING_LOG.md`](ENGINEERING_LOG.md).
 | `POST /train`, `GET /train/{id}` | launch and monitor a fine-tuning run |
 | `POST /exclude` | upload a reference image to suppress |
 
-Boxes are returned **normalised** to 0–1 so a client can scale to its own
-viewport without knowing the source resolution.
+Boxes are **normalised to 0–1** so a client can scale to its own viewport
+without knowing the source resolution.
 
 Each `source_id` gets its own tracker, background model, motion history and
 overlay mask — state never leaks between feeds. Ultralytics hangs a single
 tracker off the predictor and reuses it for every call, so this had to be
-managed explicitly.
-
-## Setup
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-bash scripts/fetch_weights.sh        # weights/best.pt from the latest release
-python scripts\check_gpu.py          # must print CUDA available: True
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-The checkpoint is a [release](../../releases) asset rather than a tracked file —
-20 MB of binary that changes wholesale on every retrain is what git stores worst.
-`fetch_weights.sh` verifies it against the published sha256, because a truncated
-checkpoint otherwise fails deep inside `torch.load` with an unhelpful error.
-
-Swagger UI at `/docs`. Do not use `--reload` — it reloads the model onto the GPU
-on every file change.
-
-Environment variables use a `BATTLESIGHT_` prefix (the project's original name):
-`BATTLESIGHT_MODEL`, `BATTLESIGHT_DEVICE`, `BATTLESIGHT_USE_TENSORRT`. Every
-threshold in `app/config.py` is overridable the same way, and each one is
-commented with the measurement that justifies its value.
-
-## Tests
-
-```powershell
-$env:PYTHONPATH="."
-python tests\test_overlay_mask.py      # masks glyphs, never masks large boxes, fails open
-python tests\test_motion_structure.py  # light vs. object, brief-appearance fast path
-python tests\test_motion_coherence.py  # coherent walk survives, foliage jitter does not
-python tests\test_history_cap.py       # bounded LRU history, per-feed isolation
-python tests\test_exclusion.py         # reference-image matching
-python tests\test_motion_gating.py     # gated path skips the GPU on a still scene
-```
-
-They assert safety properties, not just happy paths.
+managed explicitly; `tests/test_feed_isolation.py` holds it to that.
 
 ## Known limitations
+
+Kept, not hidden. These are the honest edges of the system.
 
 - **Personnel in vegetation from a UAV are still missed.** Resolution, palette,
   viewpoint and augmentation have each been ruled out by direct experiment; what
   remains is pose — nothing in the training mix contains prone or crawling
   people seen from above.
-- **No UAV-as-target class.** VisDrone is footage taken *from* drones, not *of*
-  them. This needs UAV-labelled data and a fifth class; no threshold change can
-  substitute.
-- **Confident false positives off-distribution.** Nothing in VisDrone or
-  WiderPerson resembles an indoor close-range scene, and the model has no
-  learned notion of "not a vehicle" for that viewpoint:
+- **Ground-level vehicle recall has collapsed.** On dense urban footage,
+  0.07 `light_vehicle` per frame on frames plainly containing six, against
+  mAP50 0.860 for that class on the blended validation set. The cause is
+  identified: WiderPerson contributes 8,000 ground-level street scenes labelled
+  for people only, presenting their unlabelled traffic to the trainer as
+  confirmed negatives. Diagnosis in §20; the fix (`pseudo_label_vehicles.py`)
+  exists and has not yet been applied to that dataset.
+- **Confident false positives off-distribution.** Nothing in the training data
+  resembles an indoor close-range scene, and the model has no learned notion of
+  "not a vehicle" for that viewpoint:
 
   ![light_vehicle false positives on a pencil case and a highlighter](docs/offdistribution_false_positives.jpg)
 
   *`light_vehicle` at 0.39–0.42 on a pencil case and a highlighter, across three
   inference resolutions. Raising resolution removes one of the two boxes and
   tightens the other; it does not remove the failure. This is a training-data
-  gap — indoor and hard-negative imagery — not a threshold to tune, and it is
-  the reason the confidence floor sits at 0.25 rather than the 0.16 where mean
-  F1 actually peaks.*
+  gap, not a threshold to tune, and it is why the confidence floor sits at 0.25
+  rather than the 0.16 where mean F1 actually peaks.*
 
-- **~10 fps tracked throughput** at imgsz 1280. Fixed per-frame overhead
-  dominates, so lowering imgsz does not help much.
+- **No UAV-as-target class.** VisDrone is footage taken *from* drones, not *of*
+  them. This needs UAV-labelled data and a fifth class.
+- **~10 fps tracked throughput** at imgsz 1280, and per-frame cost scales with
+  detection count — 46 ms median on a crowd against 25 ms on sparse footage.
 - **One GPU, serialised.** The threadpool keeps the event loop responsive; it
-  does not make inference parallel. Multiple feeds share the throughput.
-- Training job state is in-memory, and CORS is `*` — both fine for a laptop
-  deployment, neither fine for a real one.
+  does not make inference parallel.
+- Training job state is in-memory and CORS is `*` — both fine for a laptop,
+  neither fine for a real deployment.
+
+## Setup from source
+
+```bash
+pip install -e ".[serve]"           # add gpu for TensorRT, train for augmentation
+bash scripts/fetch_weights.sh v1.0.0
+python scripts/check_gpu.py          # must print CUDA available: True
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Do not use `--reload` — it reloads the model onto the GPU on every file change.
+
+The checkpoint is a [release](../../releases) asset rather than a tracked file:
+20 MB of binary that changes wholesale on every retrain is what git stores
+worst. `fetch_weights.sh` verifies it against the published sha256, because a
+truncated checkpoint otherwise fails deep inside `torch.load` with an unhelpful
+error.
+
+Environment variables use a `BATTLESIGHT_` prefix, from the project's original
+name. Every threshold in `app/config.py` is overridable that way, and each is
+commented with the measurement that justifies its value.
+
+### Tests
+
+```bash
+pytest              # 22 property tests, no GPU and no checkpoint needed, ~0.5 s
+pytest -m model     # needs a checkpoint and the torch stack
+pytest -m server    # needs a running uvicorn
+pytest -m ""        # everything
+```
+
+They assert safety properties rather than happy paths: that the overlay filter
+never masks a large box and fails open, that coherent motion survives and
+foliage jitter does not, that a light is distinguished from an object in one
+frame, that track history stays bounded under LRU eviction, and that feeds keep
+independent state.
+
+The default subset imports nothing heavier than OpenCV — no torch, no
+ultralytics — which is what lets it run in CI in seconds. That boundary is
+asserted on every push rather than trusted.
 
 ## Layout
 
 ```
-app/          config, detector cascade, motion filter, overlay mask,
-              exclusion store, FastAPI routers, training manager
-scripts/      dataset conversion/remapping, training, TensorRT export,
-              annotation, benchmarking, burst diagnosis, promotion rubric
-tests/        standalone property tests
-data/         4-class dataset configs
-weights/      checkpoint lands here; fetched from a release, not tracked
-docs/         figures used above
+app/       config, detector cascade, motion filter, overlay mask,
+           exclusion store, FastAPI routers, training manager
+scripts/   dataset conversion, training, TensorRT export, annotation,
+           benchmarking, burst regression, the promotion gate
+tests/     property tests, hardware requirements as pytest markers
+data/      4-class dataset configs
+docs/      figures, and REPRODUCE.md
 ```
 
-Datasets, training runs and captured footage are not tracked — see
-`scripts/prepare_training.py` and `scripts/remap_visdrone.py` for how the
-training data is assembled. The dataset yamls carry no absolute paths: they
-anchor at VisDrone and reach its siblings with `../`, so they resolve against
-whatever you set once with `yolo settings datasets_dir="<path>"`.
+Datasets, training runs and captured footage are not tracked. The dataset yamls
+carry no absolute paths — they anchor at VisDrone and reach its siblings with
+`../`, so they resolve against whatever you set once with
+`yolo settings datasets_dir="<path>"`.
 
-## License
+## Scope
 
-MIT — see [`LICENSE`](LICENSE). The datasets it is trained on carry their own
-terms: VisDrone, WiderPerson and AerialPerson are each licensed for research use
-by their respective authors, and the checkpoints in `weights/` inherit those
-terms.
+Operator situational awareness: the system reports what is in frame and what is
+moving, to a human who decides what it means. It is not fire control, not
+automated targeting, and not combatant classification — it detects four generic
+object classes and flags coherent motion, nothing more.
+
+The same capability — finding people and vehicles from an aerial or body-worn
+camera — is what search and rescue, crowd safety and infrastructure inspection
+need. The hardest open problem here, finding a prone person in vegetation from a
+UAV, is a search-and-rescue problem stated exactly.
+
+## Licence and provenance
+
+MIT — see [`LICENSE`](LICENSE). The training datasets carry their own terms:
+VisDrone, WiderPerson, AerialPerson and CrowdHuman are each licensed for
+research use by their authors, and the checkpoints inherit those terms.
+
+The engineering in `app/`, `scripts/` and `tests/` is mine. It began as part of
+a Smart India Hackathon team project, published under the team lead's account as
+[Fusion-Sight](https://github.com/soumik15630m/Fusion-Sight); this repository is
+that work under my own name, with a fresh history. The two have diverged — this
+one is where development continues.

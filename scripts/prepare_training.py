@@ -86,8 +86,32 @@ SOURCES = [
     ("WiderPerson train", "WiderPerson/images/train", "train", "8000, ground personnel"),
     ("AerialPerson train", "AerialPerson/images/train", "train",
      "UAV personnel over natural terrain -- the missing domain"),
-    ("CrowdHuman train", "CrowdHuman/images/train", "train",
-     "15000, dense occluded ground-level personnel"),
+    # CrowdHuman is TEMPORARILY OUT of the mix, 2026-09-05. Two reasons, and
+    # the second is the better one:
+    #
+    # 1. It broke the machine. With CrowdHuman in, the blend is 37,735 images
+    #    and ~970,000 boxes, and training died of SYSTEM RAM exhaustion (32 GB)
+    #    partway through epoch 1. Windows multiprocessing spawns rather than
+    #    forks, so every dataloader worker holds a FULL copy of the label
+    #    arrays -- CrowdHuman alone contributes 339,565 boxes over 15,000
+    #    images, about 35% of the total. Lowering --workers helps but the disk
+    #    here reads at ~15 MB/s, so starving the loader has its own cost.
+    #
+    # 2. Leaving it out makes this a SINGLE-VARIABLE run. SARD is then the only
+    #    change against the deployed checkpoint's mix, so if the result moves,
+    #    the cause is not ambiguous. Section 21 is a fresh reminder of what
+    #    ambiguity costs.
+    #
+    # It also avoids compounding a known problem: CrowdHuman is personnel-only
+    # and shifts the class balance from 44.8% to 59.8% personnel, diluting the
+    # vehicle classes from 46.1% to 33.5% -- exactly when section 20 found
+    # ground-level vehicle recall already collapsed.
+    #
+    # Put it back as its own run once SARD is settled. It is converted,
+    # registered and measured clean (0.047 unlabelled vehicles/image, so no
+    # pseudo-labelling needed); only this line is in the way.
+    # ("CrowdHuman train", "CrowdHuman/images/train", "train",
+    #  "15000, dense occluded ground-level personnel"),
     # SARD, added 2026-09-05 after log section 21. Prone and non-upright
     # personnel seen from a UAV over grass, forest shade and quarries -- the
     # pose distribution nothing else in this mix contains. Fine-tuning on it

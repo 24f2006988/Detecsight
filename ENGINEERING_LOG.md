@@ -15,6 +15,48 @@ Measured throughout on: Windows 11, RTX 4060 Laptop (8 GB), Python 3.12.10,
 torch 2.13.0+cu126, ultralytics 8.4.135, fastapi 0.141.1. Every latency number
 here is from that machine; see §19c before comparing any of them.
 
+---
+
+## What was tried and rejected
+
+The shortest useful summary of this file. Each row is a change that looked
+reasonable, was measured, and was **not** kept — with the number that killed it.
+Full reasoning is in the linked section.
+
+| rejected | why, measured | where |
+|---|---|---|
+| **INT8 quantisation** | 4.23 ms vs FP16's 6.95 ms, but −4 pt mAP50 and −5 pt recall. At ~10 fps the per-frame fixed overhead dominates, so 2.7 ms buys nothing visible while 5 points of recall is visible. | §11 |
+| **Tuning `IOU_THRESHOLD` for crowds** | A silent no-op, and always had been. YOLO26's head reports `end2end: True` — it is NMS-free and the `iou=` argument is ignored. Sweeping 0.5/0.6/0.7/0.8 gave byte-identical results at every value. Crowd behaviour is *learned*; only training changes it. | §19 |
+| **Raising imgsz above 1280** | 1280→1536 buys +0.4% detections for +46% cost, and the *large* buckets get worse — above the trained size the model is off-distribution for its own scale priors. | §19 |
+| **`MOTION_GATED`** | Goes blind to stationary targets. It is a real latency win and a real safety regression; the standing decision is that it stays off. | §5 |
+| **A drone-specialised checkpoint** | Retired after the blended `fpv` checkpoint beat it on the drone view's own home domain: VisDrone val personnel mAP50 0.3162 → 0.7064. Two weight files were kept in GPU memory to serve identical detections. | §17 |
+| **Far-field second pass on by default** | Not rejected for cost but for jitter: p90 48.5 ms against a 26.9 ms median, which makes an AR overlay stutter. Kept, and off by default; good for offline annotation where latency is free. | §19 |
+| **EMA smoothing for the v7 burst** | Made it worse. Smoothing made the decision *slower*; the gate needed the decision to *last* longer, which is what `MOTION_CHRONIC_COOLDOWN` does. | §13 |
+| **`predict()` between `track()` calls** | Cost ~60% of detections, silently. Bisected by running the far-field pass with every box discarded: v5 personnel 1560 → 562 from the bare `predict()` call. Restoring `predictor.trackers` did not fix it. Fixed with a dedicated second model instance. | §19 |
+| **Adding BDD100K/KITTI for the `v11` phantoms** | The diagnosis it rested on was wrong — the boxes were never on the scene, they were on the HUD. No training data would have fixed it. | §14 → §16 |
+
+---
+
+## Contents
+
+| section | subject |
+|---|---|
+| [Setup](#setup) · [Dataset](#dataset) · [Training](#training) · [API surface](#api-surface-in-full) | orientation |
+| [Deviations from the original setup notes](#deviations-from-the-original-setup-notes) | what the notes got wrong |
+| §1–§4 | checkpoint, resolution, confidence, `max_det` |
+| §5, §5b | motion gating; TensorRT + WebRTC latency |
+| §6–§9 | ego compensation, `moving_object` explosions, chronic noise |
+| §10 | drone-view specialised model *(retired — see §17)* |
+| §11 | FP16 standard, INT8 rejected |
+| §12, §13 | screen capture; branch-selection flicker |
+| §14, §15 | **superseded by §16** — tuned against a wrong description of the clips |
+| §16 | the clips were misidentified; the HUD was the dominant error source |
+| §17 | the `fpv` run: completed, measured, promoted |
+| §18 | lights vs. people; the split-second target |
+| §19 | the far field and the 40 ms budget |
+| §20 | dense ground-level crowds, and a confirmed vehicle-label contamination |
+| [Still outstanding](#still-outstanding) · [Known limitations](#known-limitations) | open problems |
+
 ## Setup
 
 Installation, serving and the API contract are in [`README.md`](README.md) —
@@ -789,6 +831,11 @@ trip rather than preventing a false one. Reverted; see the comment on
 
 ### 14. `v10`/`v11`: off-domain content, two different diagnoses, one config change
 
+> **SUPERSEDED by section 16.** The premise of this section is wrong: the
+> clips are not off-domain wildlife footage. The diagnosis and the fix below
+> were both derived from that mistaken description. Kept because the reasoning
+> is what section 16 had to undo, not because it is correct.
+
 The user supplied two more clips outside the tactical/aerial/handheld domain
 this project targets -- `v10.mp4` (a wildlife/nature clip with burned-in
 captions, wind-blown grass) and `v11.mp4` (a forward-facing highway dashcam,
@@ -857,6 +904,11 @@ personnel situational awareness). `v10_annotated.mp4` regenerated;
 verified via the sweep above instead, to keep the session moving).
 
 ### 15. Per-view motion coherence, and a personnel recall floor for ground view
+
+> **SUPERSEDED by section 16** for everything concerning `v10`/`v11`. The
+> per-view coherence thresholds themselves survive and are still deployed; the
+> reasoning about what they do for `v10` personnel recall does not -- section
+> 16e measures that effect at zero.
 
 Fix 14's 0.85 `MOTION_COHERENCE_THRESHOLD` was global, so it also tightened
 ground view -- the handheld/bodycam-style view whose whole purpose is
@@ -1512,6 +1564,92 @@ Trust WITHIN-RUN comparisons (parallel on vs off, back to back, warmed) and
 treat absolutes as indicative. README's "Measured on this machine" convention
 assumes a warm GPU; these numbers warm for 40 frames first, which is the only
 reason the parallel result is trustworthy at all.
+
+### 20. Dense ground-level crowds, and a confirmed vehicle-label contamination (2026-09-05)
+
+A pedestrian crossing at rush hour, 1280×720, 3,212 frames — hundreds of people
+per frame at every scale from 10 px to full height, with vehicles crossing
+between phases. This is the densest ground-level footage the system has been run
+on, and it was chosen to test the case `CrowdHuman` was registered for.
+
+**Tracked path, whole clip:**
+
+| | |
+|---|---|
+| `personnel` | 63,133 total, 19.66/frame |
+| per-frame spread | min 1, median 19, p75 27, p90 34, **max 78** |
+| frames with zero personnel | 0 of 3,212 |
+| unique `personnel` track ids | 2,281 |
+| `light_vehicle` / `heavy_vehicle` / `moving_object` | 402 / 48 / 380 |
+| served-path latency | median 46.1 ms, p90 58.5 ms |
+| inference alone (`annotate_video.py`) | 18.7 ms/frame |
+
+**a. The system tracks the near field well and is effectively blind past
+mid-field.** Detections cluster in the lower third of the frame; the standing
+crowd behind it, several hundred people at 10–25 px, produces almost nothing.
+The size histogram of what it *reports* is the mirror image of what is *there*:
+
+| detected box size | share of detections |
+|---|---|
+| <16 px | 5 boxes, 0.0% |
+| 16–32 px | 12.7% |
+| 32–48 px | 8.1% |
+| 48–64 px | 7.4% |
+| 64–96 px | 19.4% |
+| >96 px | **52.4%** |
+
+Median detected box is 98.6 px. In a scene dominated by small people, over half
+of what comes back is large. This is §19's size-recall curve reproduced on real
+footage rather than on a validation split, and it is consistent with it —
+nothing new is wrong, but the shape of the limit is now visible outside the lab.
+
+**b. Latency scales with detection count, which the sparse clips hid.** 46.1 ms
+median here against the 24.6 ms measured on `v5` in §19c. The extra cost is
+per-detection work — tracking association, motion claiming, exclusion embedding
+— not model inference, which stayed at 18.7 ms. The 40 ms budget in §19 holds on
+sparse footage and does not hold on a crowd. Worth stating plainly because §19's
+number was measured on clips averaging a tenth of this density.
+
+**c. Vehicle recall on ground-level urban footage has collapsed, and this
+confirms a contamination that was predicted but never measured.**
+
+Over frames 500–559, which contain a taxi, a white van, a box truck and several
+cars continuously and unambiguously in frame, the stateless path returned
+**4 `light_vehicle` detections in 60 frames — 0.07/frame**, against roughly six
+vehicles visibly present per frame. Rendered and inspected directly: at frame
+514 not one of the six is boxed, while 78 `personnel` are.
+
+The deployed checkpoint scores `light_vehicle` mAP50 0.860 on the blended
+validation set, so this is not a weak class in general — it is a domain
+collapse, and its cause is already documented as a *hypothesis* in the training
+notes for §16g. `pseudo_label_vehicles.py` exists because AerialPerson labels
+people only, and merging it raw presented ~258,000 unlabelled cars to the
+trainer as confirmed negatives. WiderPerson has the identical shape — 8,000
+ground-level street scenes, personnel-only labels, unlabelled traffic — and has
+been in the training mix since `battlesight_multi.yaml` without ever being
+pseudo-labelled. It was flagged at the time as "a prime suspect if vehicle
+metrics ever look inexplicably poor."
+
+This is that evidence. Ground-level vehicles are exactly the objects WiderPerson
+teaches the model *not* to detect, and the aerial vehicles VisDrone teaches are
+a different enough distribution that they do not compensate.
+
+Two consequences, neither yet acted on:
+
+- **CrowdHuman must be pseudo-labelled before it is trained on.** It is another
+  15,000 ground-level person-only images full of unlabelled street traffic —
+  roughly twice WiderPerson's contribution to the same failure. Its plan called
+  for measuring the unlabelled-vehicle rate first and pseudo-labelling if it
+  cleared ~3/image; this measurement is a strong prior that it will.
+- **WiderPerson should be pseudo-labelled retroactively**, and the blended
+  validation set cannot detect whether that helped — its vehicle instances are
+  overwhelmingly aerial. A ground-level vehicle val split is needed to measure
+  the fix at all.
+
+**d. Duplicate boxes on single targets in dense crowds.** Several people carry
+two or three concentric boxes. Since the head is `end2end` and NMS-free (§19),
+there is no suppression parameter to tighten — this is learned behaviour and, like
+the crowd recall it accompanies, only training data changes it.
 
 ### Still outstanding
 

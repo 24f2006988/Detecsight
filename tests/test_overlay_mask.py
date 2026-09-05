@@ -13,17 +13,13 @@ Plus the two conditions that must NOT be sufficient on their own: a static
 camera provides no evidence at all, and a detection that moves across the frame
 is never masked no matter how many frames it appears in.
 
-    python tests/test_overlay_mask.py
+    pytest tests/test_overlay_mask.py
 """
-import sys
-from pathlib import Path
-
 import numpy as np
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from app import config  # noqa: E402
-from app.overlay_mask import OverlayMask  # noqa: E402
+from app import config
+from app.overlay_mask import OverlayMask
 
 
 def box(cx, cy, size=0.01, class_id=2):
@@ -42,51 +38,52 @@ def feed(mask, source, dets_per_frame, n, camera_moving=True):
         mask.observe(frame(), dets_per_frame, source, camera_moving)
 
 
-def check(label, got, want):
-    status = "PASS" if got == want else "FAIL"
-    print("  [{}] {:<52} got={} want={}".format(status, label, got, want))
-    return got == want
+@pytest.fixture
+def warm():
+    return int(config.OVERLAY_WARMUP_FRAMES) + 40
 
 
-def main():
-    ok = True
-    warm = int(config.OVERLAY_WARMUP_FRAMES) + 40
+@pytest.fixture
+def glyph():
+    return [box(0.5, 0.5, size=0.01)]
 
-    # 1. A glyph-sized box pinned to one spot while the camera pans is masked.
+
+def test_static_glyph_under_moving_camera_is_masked(warm, glyph):
     m = OverlayMask()
-    glyph = [box(0.5, 0.5, size=0.01)]
     feed(m, "hud", glyph, warm)
-    ok &= check("static glyph under a moving camera is masked",
-                len(m.filter(glyph, "hud")), 0)
+    assert len(m.filter(glyph, "hud")) == 0
 
     # ...and a real detection elsewhere in the same frame still survives.
-    ok &= check("a box in an unmasked cell survives",
-                len(m.filter([box(0.2, 0.8, size=0.01)], "hud")), 1)
+    assert len(m.filter([box(0.2, 0.8, size=0.01)], "hud")) == 1
 
-    # 2. Size is an absolute veto. Same position, same persistence, big box.
+
+def test_large_persistent_box_is_never_masked(warm):
+    # Size is an absolute veto. Same position, same persistence, big box.
     m = OverlayMask()
     big = [box(0.5, 0.5, size=0.5)]
     feed(m, "big", big, warm)
-    ok &= check("a LARGE persistent box is never masked",
-                len(m.filter(big, "big")), 1)
+    assert len(m.filter(big, "big")) == 1
 
-    # 3. A static camera is not evidence: nothing may be masked from it.
+
+def test_static_camera_contributes_no_evidence(warm, glyph):
     m = OverlayMask()
     feed(m, "still", glyph, warm, camera_moving=False)
-    ok &= check("static camera contributes no evidence",
-                len(m.filter(glyph, "still")), 1)
+    assert len(m.filter(glyph, "still")) == 1
 
-    # 4. A detection that traverses the frame is attached to the world.
+
+def test_box_traversing_the_frame_is_never_masked(warm):
+    # A detection that traverses the frame is attached to the world.
     m = OverlayMask()
     for i in range(warm):
         moving = [box(0.05 + 0.9 * ((i % 40) / 40.0), 0.5, size=0.01)]
         m.observe(frame(), moving, "mover", True)
     still_there = [box(0.05 + 0.9 * ((warm % 40) / 40.0), 0.5, size=0.01)]
-    ok &= check("a box traversing the frame is never masked",
-                len(m.filter(still_there, "mover")), 1)
+    assert len(m.filter(still_there, "mover")) == 1
 
-    # 5. Fail open. Cover far more than OVERLAY_MAX_FRACTION with glyphs and
-    #    the filter must switch itself off rather than blind the detector.
+
+def test_whole_frame_coverage_fails_open(warm):
+    # Cover far more than OVERLAY_MAX_FRACTION with glyphs and the filter must
+    # switch itself off rather than blind the detector.
     m = OverlayMask()
     grid = config.OVERLAY_GRID
     flood = [box((i % grid) / grid + 0.5 / grid,
@@ -94,30 +91,26 @@ def main():
              for i in range(grid * grid)]
     feed(m, "flood", flood, warm)
     info = m.debug_info("flood")
-    ok &= check("whole-frame coverage disables the filter (fails OPEN)",
-                len(m.filter(flood, "flood")), len(flood))
-    ok &= check("...and reports itself inactive", info["overlay_active"], False)
+    assert len(m.filter(flood, "flood")) == len(flood)
+    assert info["overlay_active"] is False
 
-    # 6. Nothing is masked before warmup completes.
+
+def test_nothing_masked_before_warmup(glyph):
     m = OverlayMask()
     feed(m, "cold", glyph, 5)
-    ok &= check("nothing masked before warmup", len(m.filter(glyph, "cold")), 1)
+    assert len(m.filter(glyph, "cold")) == 1
 
-    # 7. moving_object is exempt: it comes from the motion pass, which by
-    #    construction cannot fire on something painted onto the sensor.
+
+def test_moving_object_is_never_masked(warm, glyph):
+    # moving_object comes from the motion pass, which by construction cannot
+    # fire on something painted onto the sensor.
     m = OverlayMask()
     feed(m, "mo", glyph, warm)
     blob = dict(glyph[0], class_id=-1, class_name="moving_object")
-    ok &= check("moving_object is never masked", len(m.filter([blob], "mo")), 1)
+    assert len(m.filter([blob], "mo")) == 1
 
-    # 8. State is per source, never shared between feeds.
+
+def test_state_is_per_source(warm, glyph):
     m = OverlayMask()
     feed(m, "feed-a", glyph, warm)
-    ok &= check("another feed is unaffected", len(m.filter(glyph, "feed-b")), 1)
-
-    print("\n" + ("PASS" if ok else "FAIL"))
-    raise SystemExit(0 if ok else 1)
-
-
-if __name__ == "__main__":
-    main()
+    assert len(m.filter(glyph, "feed-b")) == 1

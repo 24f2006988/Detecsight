@@ -3,12 +3,8 @@ incoherent jitter (e.g. wind-blown foliage) via trajectory straightness.
 No API/model needed -- pure app.motion_filter logic on synthetic frames.
 """
 import itertools
-import sys
-from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.motion_filter import MotionDetector
 
@@ -30,22 +26,14 @@ def run(source_id, positions):
     return last
 
 
-def main():
-    # A square walking steadily in one direction -- a straight trajectory.
-    coherent_positions = [(20 + i * 10, 100) for i in range(12)]
-    coherent = run("coherent", coherent_positions)
-    print(f"Coherent (steady walk):   {len(coherent)} blob(s) survived -> {coherent}")
+def test_coherent_walk_survives():
+    """A square walking steadily in one direction -- a straight trajectory."""
+    coherent = run("coherent", [(20 + i * 10, 100) for i in range(12)])
     assert len(coherent) >= 1, "a steadily-moving object should be detected"
 
-    # A square jittering back and forth around a fixed point -- foliage-like.
+
+def test_incoherent_jitter_is_filtered():
+    """A square jittering back and forth around a fixed point -- foliage-like."""
     jitter_cycle = [(150, 100), (158, 92), (144, 108), (154, 96)]
-    jitter_positions = list(itertools.islice(itertools.cycle(jitter_cycle), 12))
-    jitter = run("jitter", jitter_positions)
-    print(f"Jitter (foliage-like):    {len(jitter)} blob(s) survived -> {jitter}")
+    jitter = run("jitter", list(itertools.islice(itertools.cycle(jitter_cycle), 12)))
     assert len(jitter) == 0, "incoherent jitter should be filtered out"
-
-    print("PASS")
-
-
-if __name__ == "__main__":
-    main()

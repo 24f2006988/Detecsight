@@ -1,27 +1,44 @@
-"""The motion history must not grow without bound as track ids climb."""
-from app import config
-from app.detector import Detector
+"""The motion history must not grow without bound as track ids climb.
 
-d = Detector()
-cap = config.MAX_TRACKS_PER_SOURCE
+Marked `model` because constructing Detector imports ultralytics and torch,
+not because it runs inference -- none of the assertions below touch the
+network. Cheap, but it needs the model stack installed.
 
-for tid in range(cap * 3):
-    d._is_moving("drone-01", tid, 0.5, 0.5)
+    pytest -m model tests/test_history_cap.py
+"""
+import pytest
 
-feed = d._history["drone-01"]
-print(f"cap                 : {cap}")
-print(f"ids pushed          : {cap * 3}")
-print(f"entries retained    : {len(feed)}")
-print(f"oldest id retained  : {min(feed)}  (expect {cap * 3 - cap})")
-print(f"newest id retained  : {max(feed)}")
-assert len(feed) == cap, "history is not bounded"
-assert min(feed) == cap * 3 - cap, "eviction is not least-recently-seen"
 
-# a second feed must be tracked independently
-d._is_moving("helmet-A", 1, 0.5, 0.5)
-print(f"feeds tracked       : {sorted(d._history)}")
-print(f"stats()             : {d.stats()}")
-assert len(d._history["helmet-A"]) == 1
-d.reset_source("drone-01")
-assert "drone-01" not in d._history
-print("PASS: history bounded, LRU eviction, per-feed isolation, reset")
+@pytest.fixture
+def detector():
+    from app.detector import Detector
+
+    return Detector()
+
+
+@pytest.mark.model
+def test_history_is_bounded_with_lru_eviction(detector):
+    from app import config
+
+    cap = config.MAX_TRACKS_PER_SOURCE
+    for tid in range(cap * 3):
+        detector._is_moving("drone-01", tid, 0.5, 0.5)
+
+    feed = detector._history["drone-01"]
+    assert len(feed) == cap, "history is not bounded"
+    assert min(feed) == cap * 3 - cap, "eviction is not least-recently-seen"
+
+
+@pytest.mark.model
+def test_feeds_are_tracked_independently_and_reset(detector):
+    from app import config
+
+    cap = config.MAX_TRACKS_PER_SOURCE
+    for tid in range(cap * 3):
+        detector._is_moving("drone-01", tid, 0.5, 0.5)
+
+    detector._is_moving("helmet-A", 1, 0.5, 0.5)
+    assert len(detector._history["helmet-A"]) == 1
+
+    detector.reset_source("drone-01")
+    assert "drone-01" not in detector._history

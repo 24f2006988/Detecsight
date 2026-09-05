@@ -86,6 +86,8 @@ SOURCES = [
     ("WiderPerson train", "WiderPerson/images/train", "train", "8000, ground personnel"),
     ("AerialPerson train", "AerialPerson/images/train", "train",
      "UAV personnel over natural terrain -- the missing domain"),
+    ("CrowdHuman train", "CrowdHuman/images/train", "train",
+     "15000, dense occluded ground-level personnel"),
     ("VisDrone val", "VisDrone/images/val", "val", "548"),
     ("WiderPerson val", "WiderPerson/images/val", "val", "1000"),
     # AerialPerson's val split is DELIBERATELY NOT in this list. Its labels are

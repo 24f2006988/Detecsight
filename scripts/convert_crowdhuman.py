@@ -265,7 +265,7 @@ def convert_split(split, raw: Path, out: Path, limit, link, overwrite):
 def main():
     args = parse_args()
     raw, out = Path(args.raw), Path(args.out)
-    print(f"Converting CrowdHuman -> BattleSight personnel-only labels")
+    print("Converting CrowdHuman -> BattleSight personnel-only labels")
     print(f"  raw={raw}  out={out}  images={'hardlink' if args.link else 'copy'}")
     for split in args.splits:
         convert_split(split, raw, out, args.limit, args.link, args.overwrite)

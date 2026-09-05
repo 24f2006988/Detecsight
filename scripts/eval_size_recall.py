@@ -102,7 +102,7 @@ def main():
         batch = imgs[k:k + args.batch]
         results = model.predict(batch, imgsz=args.imgsz, conf=args.conf,
                                 verbose=False, device=args.device, max_det=500)
-        for img, r in zip(batch, results):
+        for img, r in zip(batch, results, strict=True):
             h, w = r.orig_shape
             label = os.path.splitext(img.replace("images", "labels"))[0] + ".txt"
             gt = load_gt(label, w, h, args.cls)
@@ -125,8 +125,8 @@ def main():
                 gt_n[b] += 1
                 if not len(pred):
                     continue
-                ix1 = np.maximum(box[0], pred[:, 0]); iy1 = np.maximum(box[1], pred[:, 1])
-                ix2 = np.minimum(box[2], pred[:, 2]); iy2 = np.minimum(box[3], pred[:, 3])
+                ix1 = np.maximum(box[0], pred[:, 0]); iy1 = np.maximum(box[1], pred[:, 1])  # noqa: E702 - paired coordinates read better aligned
+                ix2 = np.minimum(box[2], pred[:, 2]); iy2 = np.minimum(box[3], pred[:, 3])  # noqa: E702
                 inter = np.clip(ix2 - ix1, 0, None) * np.clip(iy2 - iy1, 0, None)
                 union = ((box[2] - box[0]) * (box[3] - box[1])
                          + (pred[:, 2] - pred[:, 0]) * (pred[:, 3] - pred[:, 1]) - inter)

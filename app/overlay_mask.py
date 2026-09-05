@@ -51,6 +51,7 @@ discriminates nothing. Box size (condition 2) does the safety job that test
 was there for, and does it on evidence that actually separates the two cases.
 """
 from typing import Dict, List, Optional
+
 import numpy as np
 
 from app import config

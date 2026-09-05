@@ -49,7 +49,6 @@ Guardrails, because pseudo-labelling is easy to get wrong:
 """
 import argparse
 import shutil
-import sys
 from collections import Counter
 from pathlib import Path
 
@@ -161,7 +160,7 @@ def main():
                                    verbose=False, max_det=500)[0]
             added = []
             for cls, xywhn in zip(result.boxes.cls.cpu().numpy().astype(int),
-                                  result.boxes.xywhn.cpu().numpy()):
+                                  result.boxes.xywhn.cpu().numpy(), strict=True):
                 if int(cls) not in VEHICLE_CLASSES:
                     stats["skipped_non_vehicle"] += 1
                     continue

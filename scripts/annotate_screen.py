@@ -23,7 +23,6 @@ match the source video's playback speed.
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 import cv2
@@ -33,7 +32,7 @@ import numpy as np
 # so this sibling import works the same way annotate_video.py's own `app`
 # import does one level up -- see its comment.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from annotate_video import COLORS, draw_detections  # noqa: E402
+from annotate_video import draw_detections  # noqa: E402
 
 
 def parse_args():
@@ -109,9 +108,9 @@ def main():
 
     # Deferred import: must happen after BATTLESIGHT_MODEL is set above --
     # same reasoning as annotate_video.py.
-    from app.detector import detector
-
     import mss
+
+    from app.detector import detector
 
     window = _find_window(args.window) if args.window else None
 

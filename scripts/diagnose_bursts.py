@@ -88,7 +88,7 @@ def find_bursts(series, window, min_count, factor):
         return []
     base = rolling_median(series, window)
     out = []
-    for i, (value, baseline) in enumerate(zip(series, base)):
+    for i, (value, baseline) in enumerate(zip(series, base, strict=True)):
         if value >= min_count and value >= max(factor * baseline, factor):
             out.append({"frame": i, "count": value, "baseline": round(baseline, 2)})
     return out

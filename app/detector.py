@@ -1,8 +1,8 @@
 """Model wrapper: loads once, serves many. Also holds the moving-target logic."""
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -328,7 +328,7 @@ class Detector:
                 bh = (d["y2"] - d["y1"]) * h
                 sizes.append((bw * bh) ** 0.5)
             cut = float(np.percentile(sizes, config.FARFIELD_SMALL_PCT))
-            small = [d for d, s in zip(boxes, sizes) if s <= cut]
+            small = [d for d, s in zip(boxes, sizes, strict=True) if s <= cut]
             if len(small) >= config.FARFIELD_MIN_BOXES:
                 x1 = min(d["x1"] for d in small) * w
                 y1 = min(d["y1"] for d in small) * h
@@ -340,8 +340,8 @@ class Detector:
             px1, py1, px2, py2 = config.FARFIELD_PRIOR
             region = (px1 * w, py1 * h, px2 * w, py2 * h)
 
-        x1 = max(0, int(region[0])); y1 = max(0, int(region[1]))
-        x2 = min(w, int(region[2])); y2 = min(h, int(region[3]))
+        x1 = max(0, int(region[0])); y1 = max(0, int(region[1]))  # noqa: E702 - paired coordinates read better aligned
+        x2 = min(w, int(region[2])); y2 = min(h, int(region[3]))  # noqa: E702
         if x2 - x1 < 32 or y2 - y1 < 32:
             return None
         if ((x2 - x1) * (y2 - y1)) / float(max(1, w * h)) > config.FARFIELD_MAX_FRACTION:
@@ -476,7 +476,7 @@ class Detector:
         )
 
         out = []
-        for (ox, oy, _, _), r in zip([b for b, _ in usable], results):
+        for (ox, oy, _, _), r in zip([b for b, _ in usable], results, strict=True):
             boxes = r.boxes
             if boxes is None or len(boxes) == 0:
                 continue
@@ -568,7 +568,7 @@ class Detector:
         # One batched forward pass for the whole frame's crops instead of one
         # per detection, which is what actually cost anything in this stage.
         flags = exclusion_store.are_excluded(crops)
-        return [d for d, excluded in zip(detections, flags) if not excluded]
+        return [d for d, excluded in zip(detections, flags, strict=True) if not excluded]
 
     def _full_frame_track(self, frame: np.ndarray, source_id: str, view: str, model: YOLO) -> List[dict]:
         """Ungated path: ultralytics tracking over the whole frame, every

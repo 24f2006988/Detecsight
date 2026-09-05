@@ -32,9 +32,9 @@ from pathlib import Path
 
 import cv2
 import httpx
-from av import VideoFrame
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import VideoStreamTrack
+from av import VideoFrame
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from annotate_video import draw_detections  # same overlay as the offline tool

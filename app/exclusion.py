@@ -125,7 +125,7 @@ class ExclusionStore:
         refs = np.asarray(list(self._entries.values()))
         sims = embs @ refs.T                      # (n_crops, n_refs) cosine sims
         best = sims.max(axis=1)
-        for (idx, _), sim in zip(usable, best):
+        for (idx, _), sim in zip(usable, best, strict=True):
             out[idx] = bool(sim >= threshold)
         return out
 

@@ -13,7 +13,7 @@ async def start_training(req: TrainRequest):
     try:
         return trainer.start(req)
     except RuntimeError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
 
 
 @router.get("", response_model=list[TrainJob])

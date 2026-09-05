@@ -78,8 +78,17 @@ def load_gt(label_path, w, h, cls):
     return np.array(out) if out else np.zeros((0, 4))
 
 
-def main():
-    args = parse_args()
+def measure(weights="weights/best.pt", images="datasets/WiderPerson/images/val",
+            limit=300, imgsz=1280, conf=0.10, cls=0, device="0", batch=8):
+    """Recall by ground-truth box size for one checkpoint.
+
+    Returns the per-bucket counts rather than printing them, so the same
+    measurement can back scripts/evaluate.py and the committed chart in docs/
+    instead of being locked inside a print loop.
+    """
+    args = argparse.Namespace(weights=weights, images=images, limit=limit,
+                              imgsz=imgsz, conf=conf, cls=cls, device=device,
+                              batch=batch)
     from ultralytics import YOLO
 
     imgs = sorted(glob.glob(os.path.join(args.images, "*.jpg")))
@@ -140,22 +149,50 @@ def main():
                         break
 
     dt = time.perf_counter() - t0
-    found, total = int(tp.sum()), int(gt_n.sum())
-    precision = tp.sum() / n_pred if n_pred else 0.0
-    recall = tp.sum() / gt_n.sum() if gt_n.sum() else 0.0
+    return {
+        "weights": str(args.weights),
+        "images": args.images,
+        "n_images": len(imgs),
+        "imgsz": args.imgsz,
+        "conf": args.conf,
+        "cls": args.cls,
+        "buckets": list(NAMES),
+        "gt": [int(v) for v in gt_n],
+        "found": [int(v) for v in tp],
+        "recall_by_bucket": [float(tp[i] / gt_n[i]) if gt_n[i] else 0.0
+                             for i in range(len(NAMES))],
+        "found_total": int(tp.sum()),
+        "gt_total": int(gt_n.sum()),
+        "recall": float(tp.sum() / gt_n.sum()) if gt_n.sum() else 0.0,
+        "precision": float(tp.sum() / n_pred) if n_pred else 0.0,
+        "n_pred": int(n_pred),
+        "ms_per_img": 1000 * dt / len(imgs),
+    }
 
-    print(f"\n{args.weights}  on {len(imgs)} images from {args.images}")
-    print(f"imgsz={args.imgsz} conf={args.conf} class={args.cls}   "
-          f"{1000 * dt / len(imgs):.1f} ms/img")
+
+def print_report(m):
+    print()
+    print(f"{m['weights']}  on {m['n_images']} images from {m['images']}")
+    print(f"imgsz={m['imgsz']} conf={m['conf']} class={m['cls']}   "
+          f"{m['ms_per_img']:.1f} ms/img")
     print(f"{'size(px)':>10} {'GT':>7} {'found':>7} {'recall':>8}")
-    for i, name in enumerate(NAMES):
-        r = tp[i] / gt_n[i] if gt_n[i] else 0.0
-        print(f"{name:>10} {int(gt_n[i]):>7} {int(tp[i]):>7} {r:>8.3f}")
-    print(f"\noverall: {found} found of {total}  recall={recall:.3f}  "
-          f"precision={precision:.3f}  preds={n_pred}")
-    print("\nBaseline 2026-09-02 (weights/best.pt, WiderPerson val, 300 imgs):")
+    for i, name in enumerate(m["buckets"]):
+        print(f"{name:>10} {m['gt'][i]:>7} {m['found'][i]:>7} "
+              f"{m['recall_by_bucket'][i]:>8.3f}")
+    print()
+    print(f"overall: {m['found_total']} found of {m['gt_total']}  "
+          f"recall={m['recall']:.3f}  precision={m['precision']:.3f}  "
+          f"preds={m['n_pred']}")
+    print()
+    print("Baseline 2026-09-02 (weights/best.pt, WiderPerson val, 300 imgs):")
     print("  <16=0.187  16-32=0.622  32-48=0.805  48-64=0.855  64-96=0.937  >96=0.940")
     print("  overall 6279 found, precision 0.662")
+
+
+def main():
+    args = parse_args()
+    print_report(measure(args.weights, args.images, args.limit, args.imgsz,
+                         args.conf, args.cls, args.device, args.batch))
 
 
 if __name__ == "__main__":

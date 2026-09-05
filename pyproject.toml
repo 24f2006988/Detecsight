@@ -1,0 +1,120 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "detecsight"
+version = "1.0.0"
+description = "Real-time person and vehicle detection for drone and helmet-camera video"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "Hrisit Roy" }]
+keywords = ["object-detection", "yolo", "uav", "tensorrt", "computer-vision"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "License :: OSI Approved :: MIT License",
+]
+
+# Core is deliberately small: numpy and OpenCV are everything the pure-CV layer
+# needs. app.config, app.motion_filter and app.overlay_mask import nothing
+# heavier, which is what lets the motion, coherence and overlay tests run on a
+# CPU-only CI box in seconds with no weights and no torch download.
+#
+# That boundary is a real architectural property, not an accident, so it is
+# expressed here rather than only described in prose: CI installs `.[dev]` and
+# nothing else, so a stray `import torch` in the filter layer turns into a red
+# build instead of a slow one.
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python>=4.10",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# The full inference service: model stack plus the HTTP/WebSocket layer. This
+# is the install the README and the Dockerfile use.
+#
+# torch is unpinned here on purpose. requirements.txt pins torch==2.13.0+cu126,
+# a local-version wheel that exists only on PyTorch's own index and cannot be
+# installed on a machine without CUDA at all -- which made the project
+# uninstallable for anyone without this exact GPU. Pip resolves whatever build
+# suits the host from here; pre-install the CPU wheels first (see the
+# Dockerfile) to keep a CPU-only image from pulling ~2.5 GB of CUDA libraries
+# it can never call.
+serve = [
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "ultralytics>=8.4",
+    "lap>=0.5",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.9",
+    "python-multipart>=0.0.9",
+    "pillow>=10.0",
+    "aiortc>=1.9",
+]
+
+# TensorRT FP16 export (scripts/export_engine.py). Not pinned, and not part of
+# `serve`: the correct wheel depends on the installed CUDA and driver version,
+# and Detector.load() falls back to the .pt checkpoint when no engine is
+# present, so inference works without it -- just ~2x slower.
+gpu = [
+    "tensorrt-cu12",
+    "tensorrt-cu12-libs",
+    "tensorrt-cu12-bindings",
+]
+
+# Training-time augmentation. Separate from `serve` because albumentations
+# depends on opencv-python-headless, which shares the cv2/ directory with
+# opencv-python -- last install wins, and the headless build has no highgui, so
+# pulling it into a machine that runs the preview windows silently breaks them.
+# Install this in a training environment, never alongside a preview workflow.
+train = [
+    "albumentations>=2.0",
+    "matplotlib>=3.9",
+]
+
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Repository = "https://github.com/24f2006988/Detecsight"
+
+[tool.setuptools]
+packages = ["app", "app.routers"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The default run is the subset that needs no GPU, no checkpoint and no server,
+# so `pytest` on a laptop or a CI runner does something useful instead of
+# erroring on a missing CUDA device. Opt the rest in explicitly:
+#   pytest -m gpu          the gated-path test, needs this machine
+#   pytest -m model        needs a checkpoint on disk
+#   pytest -m server       needs uvicorn on 127.0.0.1:8000
+#   pytest -m ""           everything
+addopts = "-m 'not gpu and not model and not server'"
+markers = [
+    "gpu: requires a CUDA device",
+    "model: requires a detection checkpoint on disk",
+    "server: requires a running uvicorn instance on 127.0.0.1:8000",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately not `UP` (pyupgrade). It fires ~95 times here, entirely on
+# typing.Dict -> dict and .format() -> f-string in code that works, and
+# accepting it would mean a hundred-line stylistic diff across every module
+# with no behavioural change to show for it. The rules kept are the ones that
+# find defects: pyflakes, pycodestyle, import order, and bugbear.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E501",  # long lines are almost all measurement tables in comments
+    "B008",  # FastAPI's Depends()/File() defaults are the documented idiom
+]

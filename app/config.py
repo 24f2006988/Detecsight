@@ -1,180 +1,86 @@
 """Central configuration. Every path and threshold lives here, not scattered
-through the routers."""
+through the routers.
+
+Every value below was measured rather than guessed, and each carries the result
+that chose it plus a pointer into ENGINEERING_LOG.md, where the full sweep,
+the alternatives and the rejected options live. The pointer is the contract:
+if you are about to change a constant, read its section first -- most of these
+have already been moved once and moved back.
+
+Everything is overridable by environment variable, prefix BATTLESIGHT_.
+
+    Model and precision ........ MODEL_PATH, DEVICE, QUANTIZE, IMGSZ, USE_TENSORRT
+    Detection thresholds ....... CONF_THRESHOLD*, IOU_THRESHOLD, MAX_DET
+    Far-field second pass ...... FARFIELD_*
+    Tracking ................... TRACKER_CONFIG, MOTION_WINDOW, MAX_TRACKS_*
+    Motion filter, stages 1-2 .. MOTION_MIN_BLOB_AREA, MOTION_COHERENCE_*
+    Illumination discriminator . MOTION_STRUCTURE_*
+    Motion gating (off) ........ MOTION_GATED, MOTION_CROP_*
+    Ego compensation ........... EGO_*
+    Chronic-noise gates ........ MOTION_CHRONIC_*
+    Reference exclusion ........ EXCLUSION_*
+    HUD overlay filter ......... OVERLAY_*
+"""
 import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Model
+# --- Model and precision ----------------------------------------------------
 MODEL_PATH = os.getenv("BATTLESIGHT_MODEL", str(BASE_DIR / "weights" / "best.pt"))
-# Optional second checkpoint, specialised for top-down/aerial footage (trained
-# on VisDrone alone -- data/battlesight.yaml -- rather than the VisDrone +
-# WiderPerson mix that MODEL_PATH uses). WiderPerson is ground-level personnel
-# imagery only, so mixing it in helps handheld/CCTV-angle sources but has
-# nothing to teach a straight-down drone view; a model trained on aerial
-# imagery only is not diluted by it. Selected per-request via the `view`
-# query param ("ground", the default, or "drone"); Detector.load() loads this
-# alongside MODEL_PATH only if the file exists, and every view falls back to
-# MODEL_PATH when it doesn't -- so serving still works with only one weights
-# file present. See README "Detection accuracy work" for the aerial-view split.
+# Optional per-view checkpoint, selected by the `view` query param. The
+# VisDrone-only aerial specialist that used to live here was RETIRED: the
+# blended checkpoint beat it on the drone view's own home domain, personnel
+# mAP50 0.3162 -> 0.7064 (log 17). The mechanism stays -- drop a file here and
+# ?view=drone uses it; Detector.load() falls back to MODEL_PATH when absent, so
+# serving works with one weights file present.
 DRONE_MODEL_PATH = os.getenv("BATTLESIGHT_DRONE_MODEL", str(BASE_DIR / "weights" / "drone_best.pt"))
 DEVICE = os.getenv("BATTLESIGHT_DEVICE", "0")       # "0" = first GPU, "cpu" = CPU
-# Inference precision, passed as `quantize=` to every predict()/track() call
-# (see app/detector.py). Measured on this GPU (RTX 4060 Laptop), both
-# checkpoints, VisDrone-only val, imgsz 1280, batch 1, warmed up:
-#
-#              PyTorch FP32   PyTorch FP16   TensorRT FP16   TensorRT INT8
-#   general
-#     mAP50        0.5631        0.5616         0.5608          0.5189
-#     mAP50-95     0.3160        0.3154         0.3172          0.2808
-#     recall       0.5260        0.5270         0.5303          0.4789
-#     inference     13.3ms        7.63ms         6.95ms          4.23ms
-#   drone
-#     mAP50        0.5822        0.5823         0.5813          0.5414
-#     mAP50-95     0.3280        0.3278         0.3303          0.3024
-#     recall       0.5450        0.5438         0.5468          0.5011
-#     inference     13.5ms        7.63ms         7.29ms          4.25ms
-#
-# FP16 costs <=0.002 mAP50 either model (noise) for a ~45% latency cut --
-# standard here. INT8 is NOT: a real 4-point mAP50 / 5-point recall loss on
-# both models for another ~1.6x on top of FP16, so it stays available
-# (weights/*_int8.engine exist) but is not the default -- that tradeoff is a
-# deployment decision, not something to make silently. True FP8 does not
-# exist in this stack: checked the ultralytics exporter source directly
-# (`ultralytics/engine/exporter.py`) -- it supports quantize levels 32
-# (FP32), 16 (FP16), 8 (INT8), and weight-only w8a16/w8a32, nothing else, on
-# either the PyTorch or TensorRT export path.
-#
-# None (FP32) only makes sense on CPU: half-precision ops are unsupported or
-# slower on most CPU kernels, so QUANTIZE is None whenever DEVICE == "cpu"
-# (this is also what keeps tests/test_motion_gating.py, which runs on CPU
-# with a stock checkpoint, unaffected).
+# Inference precision, passed as `quantize=` to every predict()/track() call.
+# FP16 costs <=0.002 mAP50 (noise) for a ~45% latency cut -- standard here.
+# INT8 was measured and REJECTED: 4.23 ms against FP16's 6.95, but -4 pt mAP50
+# and -5 pt recall. FP8 does not exist in this stack (checked the ultralytics
+# exporter source: 32/16/8 and weight-only w8a16/w8a32, nothing else).
+# None (FP32) on CPU, where half-precision is unsupported or slower. Log 11.
 QUANTIZE = 16 if DEVICE != "cpu" else None
-# 0.25, not 0.35. Measured on the val set at imgsz=1280 (F1 curve, mean over
-# the 4 classes) -- 0.35 was giving away a fifth of the achievable recall:
-#
-#   conf   meanF1      P       R
-#   0.25    0.499   0.697   0.412
-#   0.35    0.447   0.790   0.343     <- previous default
-#   0.50    0.367   0.873   0.265
-#
-# Mean F1 actually peaks near 0.16, but this model puts confident boxes on
-# out-of-distribution scenes (it called a pencil case `light_vehicle` at 0.42),
-# and an AR overlay full of phantom contacts is worse than a missed one. 0.25
-# takes most of the recall back without opening the floor that far.
+# 0.25, not the inherited 0.35, which was giving away a fifth of the achievable
+# recall (mean F1 0.447 -> 0.499). Mean F1 actually peaks near 0.16, but this
+# model puts confident boxes on out-of-distribution scenes -- it called a pencil
+# case `light_vehicle` at 0.42 -- and an overlay full of phantom contacts is
+# worse than a missed one. Log 3.
 CONF_THRESHOLD = float(os.getenv("BATTLESIGHT_CONF", "0.25"))
-# Ground-view-only, personnel-class-only override, lower than CONF_THRESHOLD.
-# Purpose: ground view is handheld/bodycam-style footage where the goal is
-# catching a person visible for only a short span, so personnel recall is
-# worth a small precision cost that the other 3 classes are NOT -- keeping
-# this override personnel-only avoids re-inviting the vehicle-hallucination
-# problem measured on v11.mp4 (README fix 14), which was specifically about
-# `light_vehicle` false positives at low confidence on off-distribution
-# content; personnel is a different, better-covered class (WiderPerson is
-# personnel-only ground-level data) and a different failure mode.
-#
-# Measured (not assumed) with a class-specific P/R/F1 sweep, class 0 only.
-#
-# 2026-09-02 RE-MEASURED, and the earlier conclusion here was an artefact of
-# the val set, not a property of the model. The previous sweep ran on the
-# BLENDED val (VisDrone + WiderPerson) and found a flat curve -- "0.10 buys
-# only ~2 points of recall". But VisDrone's aerial personnel dominate that
-# blend by instance count, and their P/R curve genuinely is flat, which masked
-# the ground-level headroom underneath. Split by domain, on the fpv checkpoint:
-#
-#   WiderPerson val (1,000 ground-level images -- the bodycam-like case):
-#     conf     P       R      F1      F2
-#     0.08   0.600   0.750   0.667   0.714   <- F2 optimum
-#     0.10   0.657   0.725   0.689   0.710   <- ADOPTED (the knee)
-#     0.12   0.701   0.703   0.702   0.703
-#     0.15   0.753   0.674   0.712   0.689
-#     0.20   0.814   0.636   0.714   0.665   <- previous floor, F1 optimum
-#     0.25   0.853   0.606   0.709   0.644
-#
-#   VisDrone val (aerial) for contrast: at 0.10 precision collapses to 0.431,
-#   which is why this override stays GROUND-VIEW ONLY. Drone view keeps 0.25.
-#
-# Why 0.10 and not the F1 optimum: F1 weights precision and recall equally,
-# which is the wrong objective for this system. The standing judgement (README
-# "a phantom contact is a nuisance; a suppressed real one is the failure this
-# system must never have") is a recall-weighted one, so the floor is chosen on
-# F2. F2 peaks at 0.08, but 0.10 scores within 0.004 of that peak while
-# recovering 5.7 points of precision, so 0.10 is the knee, not 0.08.
-#
-# Effect: personnel recall on ground-level imagery 0.636 -> 0.725, i.e. ~18%
-# more people found, at precision 0.814 -> 0.657. That is a deliberate trade:
-# roughly one box in three is now wrong, against roughly one person in four
-# being missed before.
-#
-# Secondary benefit for tracking: Detector._model_conf_floor() passes the
-# lowest floor any class/view needs to the model itself, so lowering this also
-# hands ByteTrack more low-confidence candidates for its second association
-# pass -- which is exactly the mechanism that keeps a briefly-visible person on
-# a track instead of dropping them.
-#
-# CAVEAT, unchanged and still the honest limit: WiderPerson is static, clean,
-# well-lit street photography, not motion-blurred bodycam or rendered game
-# footage. It does not represent that case, and this sweep cannot tell you how
-# the model behaves there. If short-span personnel recall is still not good
-# enough, the real fix is training-data coverage of dense, occluded,
-# ground-level people (CrowdHuman is the closest public match) -- not a further
-# threshold drop.
+# Ground-view-only, personnel-only override. Chosen on F2 rather than F1,
+# because F1 weights precision and recall equally and this system's standing
+# principle does not: recall 0.636 -> 0.725 for 5.7 points of precision.
+# Ground view only -- on aerial imagery precision at 0.10 collapses to 0.431,
+# so drone view keeps 0.25. Kept personnel-only to avoid re-inviting the
+# low-confidence vehicle hallucination of log 14. Full sweep in log 17b.
 CONF_THRESHOLD_PERSONNEL_GROUND = float(os.getenv("BATTLESIGHT_CONF_PERSONNEL_GROUND", "0.10"))
-# WARNING: this is a NO-OP for the model's own inference, and has been all
-# along. YOLO26's head reports `end2end: True` -- it is an NMS-free one-to-one
-# detector, so the `iou=` argument passed to predict()/track() is ignored
-# entirely. Measured 2026-09-02: sweeping it over 0.5/0.6/0.7/0.8 on 150
-# WiderPerson val images produced byte-identical results (TP=3364, preds=5210,
-# R=0.698, P=0.646 at every value). The exported engine's fixed
-# `output0 (1, 300, 6)` shape is the same story from the other side.
-#
-# Do not reach for this to fix crowd/occlusion recall -- there is no NMS to
-# loosen. Duplicate suppression is learned by the one-to-one head, so the only
-# way to change that behaviour is training.
-#
-# It IS still used, but only by this project's own IoU arithmetic:
-# _far_field_pass's duplicate check, _claim_motion_blobs, overlay_mask and the
-# motion filter's box merging all call iou_xyxy() with it. Changing it moves
-# those and nothing else.
+# WARNING: a NO-OP for the model's own inference, and always has been. YOLO26's
+# head reports `end2end: True` -- NMS-free one-to-one, so `iou=` is ignored.
+# Sweeping 0.5/0.6/0.7/0.8 gave byte-identical results at every value.
+# Do NOT reach for this to fix crowd or occlusion recall: there is no NMS to
+# loosen, suppression is learned, and only training changes it.
+# It IS still used, by this project's own IoU arithmetic only -- the far-field
+# duplicate check, _claim_motion_blobs, overlay_mask, motion box merging. Log 19.
 IOU_THRESHOLD = float(os.getenv("BATTLESIGHT_IOU", "0.5"))
-# Ultralytics defaults max_det to 300. VisDrone val frames hold up to 317
-# objects, so the default silently truncates the densest frames -- exactly the
-# crowded scenes where the count matters. Raising it costs only NMS time.
+# Ultralytics defaults to 300. VisDrone val frames hold up to 317 objects, so
+# the default silently truncates the densest frames -- exactly the crowded
+# scenes where the count matters. Raising it costs only NMS time. Log 4.
 MAX_DET = int(os.getenv("BATTLESIGHT_MAX_DET", "500"))
 
 # --- Far-field second pass (2026-09-02) -------------------------------------
-# Recall is not uniform across target size -- it collapses with distance.
-# Measured on 300 WiderPerson val images (ground-level), personnel, imgsz 1280:
+# Recall collapses with target size (<16 px 0.187, >96 px 0.940), and 41% of
+# all people are under 32 px -- so all the loss is in the far field. Tiling the
+# WHOLE frame recovers some of it but costs 5-6x inference and craters
+# precision. Instead the cheap full-frame pass CHOOSES where to spend one extra
+# pass: the far field is wherever the small boxes already are. That buys 73% of
+# full tiling's recall gain for 40% of its extra cost, precision preserved.
 #
-#   size(px)     GT   recall
-#      <16     1427    0.187     <- 41% of all people are under 32 px
-#     16-32    2214    0.622        and we find fewer than half of them
-#     32-48    1426    0.805
-#     48-64    1128    0.855
-#     64-96    1481    0.937
-#      >96     1207    0.940     <- near targets are effectively solved
-#
-# So all the loss is in the far field. Tiling the WHOLE frame recovers it
-# (<16 -> 0.306) but costs 5-6x inference and craters precision 0.662 -> 0.478
-# on duplicate/edge boxes -- not affordable at this project's ~10 fps.
-#
-# Instead the cheap full-frame pass CHOOSES where to spend one extra pass: the
-# far field is wherever the small boxes already are. Measured, same 300 images:
-#
-#                       found   precision   ms/img
-#   full frame only      6279     0.662       ~40
-#   + far-field tile     6611     0.601       115
-#   + size filter        6555     0.644       111    <- adopted
-#
-# i.e. 73% of the full-tiling recall gain for 40% of its extra cost, with
-# precision essentially preserved. The size filter is what preserves it: the
-# tile exists to find SMALL targets, so any large box it returns is a duplicate
-# of one the full frame already had.
-# DEFAULT OFF. Measured end-to-end on video it costs 80-94 ms/frame against a
-# 25-28 ms full-frame baseline -- 2-3x over the 40 ms serving budget. It stays
-# in the tree because it is the right tool OFFLINE (annotate_video.py, forensic
-# review of a recorded clip) where latency does not matter and the small-target
-# recall is worth 3x the time. Set BATTLESIGHT_FARFIELD=1 to enable.
+# DEFAULT OFF, and not for cost -- for JITTER. p90 48.5 ms against a 26.9 ms
+# median makes an AR overlay stutter. It is the right tool OFFLINE
+# (annotate_video.py, forensic review) where latency is free. Log 19, and
+# docs/size_recall.png for the curve. BATTLESIGHT_FARFIELD=1 enables it.
 FARFIELD_ENABLED = os.getenv("BATTLESIGHT_FARFIELD", "0") not in ("0", "false", "False")
 # Run the second pass every Nth frame on the tracked path. The far field is a
 # property of the scene geometry, not of the frame, so it barely moves between
@@ -200,52 +106,26 @@ FARFIELD_PRIOR = tuple(float(v) for v in os.getenv(
 # Never let the tile grow so large it is just the whole frame again (which
 # would buy nothing and cost a full extra pass).
 FARFIELD_MAX_FRACTION = float(os.getenv("BATTLESIGHT_FARFIELD_MAX_FRACTION", "0.55"))
-# Resolution for the TILE pass. MUST equal IMGSZ while serving a --static
-# TensorRT engine: the engine has a FIXED input shape, and anything else dies
-# with "input size (1,3,640,640) not equal to max model size (1,3,1280,1280)".
-# Measured, not assumed -- setting 640 here crashed the far-field pass outright.
-#
-# This is unfortunate, because the tile is a crop and does not need IMGSZ to
-# out-resolve the full-frame pass: a region covering fraction f of the frame at
-# size S has effective resolution (S/f)/IMGSZ times the full pass, so at f~0.4
-# even 640 would still be a ~1.25x gain for a quarter of the cost. That matters
-# because the strided frame is a LATENCY SPIKE, not an averaged cost: measured
-# p90 48.5 ms against a 26.9 ms median, on a 40 ms budget.
-#
-# To actually get the cheap tile you need a second engine built at the smaller
-# size (scripts/export_engine.py --model weights/best.pt --imgsz 640 --static,
-# to its own path) and to point the far-field model at it, or to let the
-# far-field model load the .pt instead of an engine. Neither is done here.
-# 1280, not 640. Targets here are tiny: the median VisDrone val object is 11 px
-# across at imgsz=640 and 75% of `personnel` boxes are under 16 px, which is at
-# the floor of what the stride-8 head can resolve. Measured on the 548-image val
-# set with weights/best.pt (see scripts/diagnose.py, runs/diagnose.json):
-#
-#   imgsz   mAP50   mAP50-95   recall   personnel mAP50
-#     640   0.4331    0.2308   0.4182            0.382
-#    1280   0.5046    0.2772   0.4855            0.534
-#
-# On real 1080p drone footage that is 33.5 vs 20.2 detections per frame -- 66%
-# more -- for 35.6 ms vs 9.3 ms (28 fps, still realtime for a feed).
-# 1600 was measured too and is strictly worse than 1280 (30.3 dets, 38.9 ms).
-# Low-resolution sources lose nothing by this: on a 478x850 phone clip the
-# only boxes at any size were false positives (a pencil case as light_vehicle),
-# and 1280 produced FEWER of them than 640. So this is a single global size,
-# not a per-source cap.
+# 1280, not the inherited 640. Targets here are tiny -- 75% of `personnel`
+# boxes are under 16 px at 640, at the floor of what the stride-8 head can
+# resolve. VisDrone val: mAP50 0.4331 -> 0.5046, personnel 0.382 -> 0.534.
+# 1600 was measured and is strictly WORSE than 1280: above the trained size the
+# model is off-distribution for its own scale priors. A single global size, not
+# a per-source cap -- low-resolution sources lose nothing, and 1280 produced
+# FEWER false positives than 640 on a 478x850 phone clip. Log 2 and log 19.
 IMGSZ = int(os.getenv("BATTLESIGHT_IMGSZ", "1280"))
-# Tile resolution for the far-field pass -- see the FARFIELD_IMGSZ note above.
-# Defined here, after IMGSZ, because it defaults to it.
+# Tile resolution for the far-field pass. MUST equal IMGSZ while serving a
+# --static TensorRT engine, whose input shape is fixed: setting 640 crashes the
+# far-field pass outright. Unfortunate, because the tile is a crop and a
+# smaller one would be both cheaper and enough -- getting that needs a second
+# engine built at the smaller size, which is not done here. Log 19.
 FARFIELD_IMGSZ = int(os.getenv("BATTLESIGHT_FARFIELD_IMGSZ", str(IMGSZ)))
 
-# TensorRT engine acceleration (scripts/export_engine.py). PyTorch inference
-# through ultralytics is the single biggest chunk of glass-to-overlay latency
-# on the tracked path. If a `.engine` file sits next to MODEL_PATH (same stem,
-# built by the export script), Detector.load() prefers it over the .pt -- same
-# weights, same classes, compiled with layer fusion and FP16 kernels for this
-# GPU. Falls back to the .pt automatically if the engine is missing, fails to
-# load (wrong TensorRT/driver version, corrupted build), or DEVICE is "cpu"
-# (an engine only runs on the GPU family it was built on). Set to 0 to always
-# use the .pt checkpoint even when a matching engine exists.
+# Prefer a `.engine` next to MODEL_PATH (same stem) over the .pt -- same
+# weights, compiled with layer fusion and FP16 kernels for this GPU, ~2x
+# faster. Falls back to the .pt automatically when the engine is missing, fails
+# to load (wrong TensorRT/driver version), or DEVICE is "cpu", since an engine
+# only runs on the GPU family it was built on. Log 5b.
 USE_TENSORRT = os.getenv("BATTLESIGHT_USE_TENSORRT", "1") not in ("0", "false", "False")
 
 # Tracking
@@ -335,56 +215,25 @@ MOTION_COHERENCE_MIN_POINTS_FAST = int(os.getenv("BATTLESIGHT_MOTION_MIN_POINTS_
 EGO_RESIDUAL_DEGRADED_FACTOR = float(os.getenv("BATTLESIGHT_EGO_RESIDUAL_DEGRADED_FACTOR", "2.0"))
 # Coherence floor applied while degraded, if stricter than the view's own.
 MOTION_COHERENCE_DEGRADED_MIN = float(os.getenv("BATTLESIGHT_MOTION_COHERENCE_DEGRADED", "0.85"))
-# Per-view, not one global value -- see MotionDetector.detect()'s `view`
-# param in app/motion_filter.py. A straightness threshold is fundamentally a
-# recall/false-positive tradeoff (see the measured table below), and the two
-# views have opposite needs: drone view looks down at terrain/foliage, where
-# brief wind-blown texture jitter is the main noise source and losing a few
-# frames of genuine short-lived motion is an acceptable trade; ground view is
-# handheld/bodycam-style, where the whole point is catching a person who's
-# only on screen a handful of frames, so the same tightening would work
-# directly against the goal. `view` defaults to "ground" -- see
-# MotionDetector._coherence_threshold below for the lookup and its fallback.
+# Per-view, not one global value: a straightness threshold is a
+# recall/false-positive tradeoff, and the two views have opposite needs.
 #
-# DRONE: 0.85, not the original 0.5. Raised after v10.mp4 (wind-blown
-# grass/foliage, off-domain nature footage that reads like aerial/top-down
-# terrain) showed short-lived coherent texture jitter can score 0.55-0.97
-# straightness over just MOTION_COHERENCE_MIN_POINTS=4 frames -- a brief
-# consistent gust looks exactly like a real trajectory over that short a
-# window, which no amount of the OTHER chronic-noise gates catches (v10's
-# fg_fraction ~0.04 and blob count ~9-10 sit far under both, this is a "few
-# blobs, briefly coherent" case unlike the "many blobs" swarms those target).
-# Measured with a full sweep, not assumed (v10.mp4/v3.mp4/v6.mp4, this
-# machine, all other settings default):
+# DRONE: 0.85. Wind-blown foliage produces short-lived texture jitter scoring
+# 0.55-0.97 straightness over the 4-frame window -- a brief consistent gust
+# looks exactly like a real trajectory that briefly, and the other chronic-noise
+# gates do not catch it (this is a "few blobs, briefly coherent" case, not a
+# swarm). 0.85 is the first value in the sweep that fully clears the bursts.
 #
-#   threshold   v10 moving_object   v10 burst frames   v3 moving_object   v6 moving_object
-#     0.50            465                  7                  34                348
-#     0.65            363                  5                  29                243
-#     0.75            266                  3                  24                205
-#     0.85            205                  0                  18                128
-#     0.92            127                  0                   7                 64
-#
-# 0.85 is the first value that fully clears v10's bursts (frames with 6+
-# moving_object boxes). REAL COST, not free: it also cuts v3's and v6's
-# already-verified-real moving_object counts by ~47% and ~63% respectively --
-# this gate cannot distinguish "briefly coherent noise" from "a real target
-# only tracked for a few frames" by straightness alone, so tightening it
-# costs genuine short-lived detections too. Neither of this project's
-# synthetic regression clips (tests/assets/moving.mp4, drone_pan.mp4)
-# exercises this gate at ANY threshold (0 moving_object throughout), so this
-# was NOT verified against a real slow/distant-target case -- if a genuine
-# UAV or slow mover ever needs to be caught only by a handful of coherent
-# frames, re-measure against real footage of that before raising further.
-# Applied ONLY to drone view -- v3/v6 are ground-view clips and were not
-# meant to lose that recall, they were just the regression check.
+# REAL COST, not free: it also cuts already-verified-real moving_object counts
+# on ground clips by 47-63%, because this gate cannot tell "briefly coherent
+# noise" from "a real target tracked for only a few frames" by straightness
+# alone. Neither synthetic regression clip exercises it at any threshold, so it
+# is NOT verified against a real slow or distant mover -- re-measure against
+# real footage of that case before raising it further. Log 14 and 15.
 MOTION_COHERENCE_THRESHOLD_DRONE = float(os.getenv("BATTLESIGHT_MOTION_COHERENCE_DRONE", "0.85"))
-# GROUND: reverted to the original 0.5 -- the value fixes 7-9 and 13 were
-# tuned and verified against (v3.mp4/v6.mp4 are ground-view clips). Kept
-# deliberately permissive: ground view's stated purpose is catching personnel
-# visible for only a short span (handheld/bodycam-style footage), which is
-# the opposite need from drone view's terrain-noise problem above -- a
-# stricter threshold there would suppress exactly the brief, real detections
-# this view exists to catch.
+# GROUND: 0.5, the value logs 7-9 and 13 were tuned and verified against, and
+# deliberately permissive. This view exists to catch personnel visible for only
+# a short span; the drone view's tightening would suppress exactly those.
 MOTION_COHERENCE_THRESHOLD_GROUND = float(os.getenv("BATTLESIGHT_MOTION_COHERENCE_GROUND", "0.5"))
 # A panning camera makes nearly the whole frame register as "changed" every
 # frame (background subtraction has no notion of camera ego-motion), which
@@ -410,42 +259,19 @@ MOTION_ASPECT_MAX = float(os.getenv("BATTLESIGHT_MOTION_ASPECT_MAX", "8.0"))
 # (i.e. it's already classified, no generic detection needed for it too).
 MOTION_CLAIM_IOU = float(os.getenv("BATTLESIGHT_MOTION_CLAIM_IOU", "0.1"))
 
-# Stage 3: motion-gated inference. Instead of running YOLO over every pixel of
-# every frame, run it only on crops around the blobs that survived stages 1-2.
-# A quiet frame costs zero GPU; a busy one costs a few small crops instead of
-# one full frame. Set BATTLESIGHT_MOTION_GATED=0 for the original behaviour
-# (full-frame YOLO every frame, motion used only to add moving_object boxes).
-# DEFAULT FLIPPED TO OFF. Motion gating means the classifier only ever sees
-# what moved, so a target that is standing still is never detected at all --
-# for situational awareness a parked truck and a stationary sentry are exactly
-# what you want on the overlay. Measured on tests/assets/drone_pan.mp4 through
-# the tracked path:
+# Stage 3: motion-gated inference -- run YOLO only on crops around blobs that
+# survived stages 1-2, so a quiet frame costs zero GPU.
 #
-#   MOTION_GATED=1    0.0 detections/frame    28.3 ms   (35 fps)
-#   MOTION_GATED=0   26.5 detections/frame    96.7 ms   (10 fps)
+# DEFAULT OFF, and it must stay off. Gating means the classifier only ever sees
+# what moved, so a stationary target is never detected at all -- and a parked
+# truck and a standing sentry are exactly what an awareness overlay is for.
+# Measured on a pan over a still scene: gated 0.0 detections/frame at 28.3 ms,
+# ungated 26.5 detections/frame at 96.7 ms. Zero. The speed was real, but it
+# was the speed of not looking.
 #
-# Zero. The clip is a pan over a still scene, so nothing in it moves relative
-# to the ground and the gate discards all 26.5 real targets per frame -- 267
-# light_vehicle, 195 two_wheeler, 62 personnel, 6 heavy_vehicle over 20 frames.
-# The speed was real but it was the speed of not looking.
-#
-# Cost of the fix is throughput: ~85 ms/frame at IMGSZ=1280 on 1080p, i.e.
-# ~10 fps end-to-end over the WebSocket.
-#
-# Do NOT try to buy that back by lowering IMGSZ. Measured in one warm process,
-# same frames, only imgsz varying:
-#
-#   imgsz   ms/frame   fps   detections/frame
-#     640       81     12.4       17.7
-#     960       82     12.2       25.5
-#    1280       88     11.4       26.5
-#
-# The tracked path is dominated by fixed per-frame overhead -- the motion pass
-# (~27 ms), ByteTrack, exclusion, postprocessing -- not by the forward pass.
-# Going 1280 -> 640 gives up a third of the detections to gain about 1 fps.
-# If throughput really has to improve, cut the motion pass instead: on this
-# path it only supplies the moving/static flag and the class-agnostic contacts.
-# Set BATTLESIGHT_MOTION_GATED=1 to restore the old behaviour.
+# Do NOT try to buy the throughput back by lowering IMGSZ: the tracked path is
+# dominated by fixed per-frame overhead, not the forward pass, so 1280 -> 640
+# gives up a third of the detections to gain about 1 fps. Log 5.
 MOTION_GATED = os.getenv("BATTLESIGHT_MOTION_GATED", "0") not in ("0", "false", "False")
 
 # Run the CPU motion stage CONCURRENTLY with the GPU pass instead of before it.
@@ -679,34 +505,16 @@ OVERLAY_MAX_BOX_AREA = float(os.getenv("BATTLESIGHT_OVERLAY_MAX_BOX_AREA", "0.01
 OVERLAY_MAX_FRACTION = float(os.getenv("BATTLESIGHT_OVERLAY_MAX_FRACTION", "0.10"))
 
 # Frames to keep suppressing blobs after MOTION_CHRONIC_BLOB_COUNT trips once.
-# The bare threshold above was not sufficient on its own: a scene that
-# fragments to just UNDER the cutoff for several consecutive frames, crossing
-# it only occasionally, gets to build fresh coherent tracks in the gaps
-# between trips and then emits them all at once. Measured on v7.mp4 (drone
-# over brick paving), which sits at 17-20 surviving blobs against the cutoff
-# of 20: frame 261 produced 7 moving_object boxes against a local baseline of
-# 0, and frame 104 produced 6.
+# The bare threshold was not enough on its own: a scene fragmenting to just
+# UNDER the cutoff, crossing it only occasionally, builds fresh coherent tracks
+# in the gaps between trips and emits them all at once.
 #
-# This is the "different mechanism" the earlier note called for after
-# EMA-smoothing this gate was tried and made things worse -- smoothing DELAYS
-# the trip (the averaged value climbs slower than the raw spike), where what
-# is actually needed is for the decision to LAST longer once made.
+# This is the mechanism that worked after EMA-smoothing this gate was tried and
+# made things WORSE. The distinction is the whole point: smoothing made the
+# decision SLOWER to trip; what was needed was for it to LAST longer once made.
 #
-# Swept with the reconstructed scripts/diagnose_bursts.py on v7.mp4 (ground
-# view, motion-only, all other settings default). "bursts" counts frames far
-# above their own local rolling median, which is the shape of the bug:
-#
-#   cooldown   moving_object   max/frame   bursts   extra frames dropped
-#      0            242            7          2              0     <- the bug
-#      2            228            5          0              7
-#      3            224            5          0             13     <- adopted
-#      5            210            5          0             22
-#      8            204            5          0             32
-#
-# 2 already clears both bursts; 3 is one frame of margin for a scene
-# fragmenting slightly differently, at a total cost of ~7% of this clip's
-# moving_object boxes. Past that the curve is just lost recall -- 5 and 8 give
-# up 13% and 16% for nothing further. Like every gate in this file this trades
-# real short-lived detections against phantom ones, so it is set to the
-# smallest value that does the job rather than the safest-looking one.
+# 2 already clears both bursts on the clip it was tuned against; 3 is one frame
+# of margin, costing ~7% of that clip's moving_object boxes. Past that it is
+# only lost recall -- 5 and 8 give up 13% and 16% for nothing further. Set to
+# the smallest value that does the job, not the safest-looking one. Log 13.
 MOTION_CHRONIC_COOLDOWN = int(os.getenv("BATTLESIGHT_MOTION_CHRONIC_COOLDOWN", "3"))

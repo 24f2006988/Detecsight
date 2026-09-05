@@ -1342,6 +1342,55 @@ personnel, and it still misses a prone body from above. Closing this needs
 training data containing prone/crawling people seen from a UAV; no dataset
 currently in the mix has it.
 
+### 17b. Personnel confidence floor 0.20 → 0.10 on ground view, chosen on F2 (2026-09-02)
+
+The note justifying the old 0.20 floor claimed that dropping it "buys only ~2
+points of recall". **That was an artefact of the validation set, not a property
+of the model.** The sweep behind it ran on the blended val, where VisDrone's
+aerial personnel dominate by instance count and their P/R curve genuinely is
+flat — which masked the ground-level headroom underneath it.
+
+Re-measured with a class-specific sweep, class 0 only, split by domain, on the
+`fpv` checkpoint. WiderPerson val, 1,000 ground-level images — the bodycam-like
+case:
+
+| conf | P | R | F1 | F2 | |
+|---|---|---|---|---|---|
+| 0.08 | 0.600 | 0.750 | 0.667 | **0.714** | F2 optimum |
+| **0.10** | 0.657 | 0.725 | 0.689 | 0.710 | **adopted** — the knee |
+| 0.12 | 0.701 | 0.703 | 0.702 | 0.703 | |
+| 0.15 | 0.753 | 0.674 | 0.712 | 0.689 | |
+| 0.20 | 0.814 | 0.636 | **0.714** | 0.665 | previous floor, F1 optimum |
+| 0.25 | 0.853 | 0.606 | 0.709 | 0.644 | |
+
+**Chosen on F2, not F1.** F1 weights precision and recall equally, which is the
+wrong objective for a system whose standing principle is that a phantom contact
+is a nuisance and a suppressed real one is not acceptable. F2 peaks at 0.08, but
+0.10 scores within 0.004 of that peak while recovering 5.7 points of precision —
+so 0.10 is the knee, and 0.08 is not worth the precision.
+
+Effect: personnel recall on ground-level imagery **0.636 → 0.725**, about 18%
+more people found, at precision 0.814 → 0.657. A deliberate trade — roughly one
+box in three now wrong, against roughly one person in four previously missed.
+
+**Ground view only.** On VisDrone val (aerial) precision at 0.10 collapses to
+0.431, so drone view keeps 0.25. Ground-level personnel mAP50 is 0.757, better
+than the blended 0.706 and better than aerial's 0.605 — the model is stronger at
+ground-level people than the headline number suggests.
+
+Secondary effect on tracking: `Detector._model_conf_floor()` passes the lowest
+floor any class or view needs down to the model, so lowering this also hands
+ByteTrack more low-confidence candidates for its second association pass. That
+is the mechanism that keeps a briefly-visible person on a track rather than
+dropping them.
+
+**The honest limit**, unchanged: WiderPerson is static, clean, well-lit street
+photography, not motion-blurred bodycam or rendered game footage. This sweep
+cannot say how the model behaves there. If short-span personnel recall is still
+not good enough, the fix is training coverage of dense, occluded, ground-level
+people — not a further threshold drop. (See §20: it is also the dataset behind
+the ground-level vehicle collapse.)
+
 ### 18. Lights vs. people, and the split-second target (2026-09-02)
 
 Two failures the trajectory gates cannot separate, because both are judged by

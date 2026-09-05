@@ -1747,6 +1747,106 @@ two or three concentric boxes. Since the head is `end2end` and NMS-free (§19),
 there is no suppression parameter to tighten — this is learned behaviour and, like
 the crowd recall it accompanies, only training data changes it.
 
+### 21. SARD: the pose hypothesis is confirmed, and fine-tuning on it alone destroys the model (2026-09-05)
+
+The longest-standing open failure here is personnel missed in vegetation from a
+UAV. Resolution, palette, viewpoint and augmentation were each ruled out by
+direct experiment; what remained was POSE, and nothing in the training mix
+contained a prone or crawling person seen from above. SARD is that missing
+distribution -- 1,980 source frames of actors simulating exhausted and injured
+people over grass, forest shade and quarries, filmed from a drone.
+
+**a. The baseline was the most informative measurement of the exercise.**
+Deployed `weights/best.pt` on SARD's held-out test split, 570 images, 732
+boxes, imgsz 1280, conf 0.10:
+
+| size (px) | GT | recall | WiderPerson val |
+|---|---|---|---|
+| <16 | 8 | 0.000 | 0.187 |
+| 16-32 | 108 | 0.037 | 0.622 |
+| 32-48 | 202 | 0.149 | 0.805 |
+| 48-64 | 134 | 0.164 | 0.855 |
+| 64-96 | 173 | 0.179 | 0.937 |
+| >96 | 107 | 0.168 | 0.940 |
+| **overall** | **732** | **0.143** | 0.707 |
+
+Recall is **flat across every size bucket**. Read the >96 px row twice: a person
+larger than 96 px is trivially detectable, and this model finds 94% of them in
+street imagery and 17% of them here. That rules out scale as the explanation
+and establishes the remaining gap as pose, background and viewpoint -- across
+732 boxes rather than the single v10 frame the diagnosis had rested on.
+
+It also separates two problems that are easy to conflate: this is the POSE gap.
+The <32 px far-field gap (0.187) is a different problem with a different fix.
+
+**b. The fine-tune worked, spectacularly, on its own domain.** 12 epochs from
+`weights/best.pt` on SARD train only, imgsz 1280, batch 4, lr0 0.002, `fpv`
+augmentation profile, 1.29 hours:
+
+| | before | after |
+|---|---|---|
+| SARD test recall | 0.143 | **0.870** |
+| SARD test precision | 0.356 | **0.755** |
+
+The flat ~0.17 line became a normal curve rising to 0.981 at >96 px.
+
+**c. It transferred to v10, partially, and the detections are real.** Measured
+over all 374 frames, stateless:
+
+| | deployed | SARD fine-tune |
+|---|---|---|
+| `personnel` @ conf 0.25 | **0** | **72**, in 70 frames |
+| `personnel` @ conf 0.10 | 22 | 205 |
+| phantom `light_vehicle` @ 0.25 | 26 | 0 |
+
+Rendered and inspected rather than counted: the boxes sit on a genuine
+crouching person in the vegetation, at 0.55-0.61 confidence across 70
+consecutive frames, which the deployed model never found at any point in the
+clip.
+
+**But frames 186 and 300 are still NOT solved.** Frame 186's prone figure:
+both models return zero. Frame 300's two visible people: the deployed model
+returns two detections and both are phantoms on HUD elements, the new model
+returns none. Pose alone was not sufficient for the hardest frames; pose AND
+false-colour palette AND heavy clutter is a harder conjunction than one
+4,041-image dataset teaches.
+
+**d. And it FAILED the promotion gate on all four criteria, catastrophically.**
+`scripts/evaluate.py` against the blended val:
+
+| class | baseline mAP50 | candidate | |
+|---|---|---|---|
+| ALL | 0.627 | **0.065** | -89% |
+| personnel | 0.706 | **0.221** | -69% |
+| two_wheeler | 0.494 | 0.005 | collapsed |
+| light_vehicle | 0.860 | 0.034 | collapsed |
+| heavy_vehicle | 0.449 | **0.000** | gone |
+
+Overall recall 0.570 -> 0.048.
+
+The vehicle classes losing ground was expected and would have been accepted for
+a search-and-rescue specialist. **`personnel` losing 69% was not.** This is
+catastrophic forgetting: 12 epochs at lr0 0.002 on a single-domain, single-class
+set of 4,041 images overwrote the general model. The checkpoint is excellent on
+SARD and close to useless everywhere else.
+
+Worth stating plainly, because it is the argument for having the gate at all:
+this model looks outstanding on its own evaluation and is 89% worse in
+production. Nothing but the rubric would have caught that.
+
+**e. Conclusion, and what to do instead.** The hypothesis is confirmed and the
+method is rejected. SARD must be BLENDED into the existing mix -- the approach
+the `fpv` run used for AerialPerson -- not trained on alone. 4,041 images
+against the existing ~18,700 is a healthy ratio that will not dominate, and the
+other three classes keep receiving positive examples throughout. Lower `lr0` to
+0.001, since this data is now known to pull hard, and watch `personnel` mAP50
+on the blended val per epoch rather than only at the end.
+
+SARD's unlabelled-vehicle rate was measured first, with a stock COCO control
+rather than this project's own checkpoint: 0.060/image over 300 tiles, far
+below the ~1/image threshold. It is merged as-is and must not be
+pseudo-labelled.
+
 ### Still outstanding
 
 - **Personnel are missed on the real UAV footage** (section 16e). On `v10.mp4`

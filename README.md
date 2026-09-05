@@ -95,6 +95,7 @@ scale priors. The remaining lever is data.
 | VisDrone-only drone specialist, judged on its *own* home domain (VisDrone val) | overall 0.5036 → 0.6274, personnel **0.3162 → 0.7064** with the blended checkpoint | **retired** — the specialist lost on the domain it was specialised for |
 | TensorRT INT8 engine (VisDrone val) | 4.23 ms vs FP16's 6.95 ms, but mAP50 0.5608 → 0.5189 and recall 0.5303 → 0.4789 | **rejected** — at ~10 fps, 2.7 ms buys nothing visible; 5 points of recall is visible |
 | Far-field second pass, on by default | +4–8% more people found, but p90 48.5 ms against a 26.9 ms median | **kept, off by default** — the jitter would make an AR overlay stutter |
+| SARD fine-tune for prone personnel (§21) | held-out recall on that domain **0.143 → 0.870**, but blended-val `personnel` mAP50 0.706 → **0.221** and two classes collapsed | **rejected** — catastrophic forgetting; the data was right, training on it alone was not |
 
 The rejections are the interesting rows. A full list of what was tried and
 abandoned, each with the number that killed it, is at the top of

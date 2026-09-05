@@ -1659,8 +1659,8 @@ per-detection work — tracking association, motion claiming, exclusion embeddin
 sparse footage and does not hold on a crowd. Worth stating plainly because §19's
 number was measured on clips averaging a tenth of this density.
 
-**c. Vehicle recall on ground-level urban footage has collapsed, and this
-confirms a contamination that was predicted but never measured.**
+**c. Vehicle recall on ground-level urban footage has collapsed. The vehicles
+are found and then thrown away at the confidence floor.**
 
 Over frames 500–559, which contain a taxi, a white van, a box truck and several
 cars continuously and unambiguously in frame, the stateless path returned
@@ -1668,32 +1668,79 @@ cars continuously and unambiguously in frame, the stateless path returned
 vehicles visibly present per frame. Rendered and inspected directly: at frame
 514 not one of the six is boxed, while 78 `personnel` are.
 
-The deployed checkpoint scores `light_vehicle` mAP50 0.860 on the blended
-validation set, so this is not a weak class in general — it is a domain
-collapse, and its cause is already documented as a *hypothesis* in the training
-notes for §16g. `pseudo_label_vehicles.py` exists because AerialPerson labels
-people only, and merging it raw presented ~258,000 unlabelled cars to the
-trainer as confirmed negatives. WiderPerson has the identical shape — 8,000
-ground-level street scenes, personnel-only labels, unlabelled traffic — and has
-been in the training mix since `battlesight_multi.yaml` without ever being
-pseudo-labelled. It was flagged at the time as "a prime suspect if vehicle
-metrics ever look inexplicably poor."
+> **This subsection was rewritten after measuring.** It first attributed the
+> collapse to WiderPerson's unlabelled vehicles, on the strength of the standing
+> prediction that WiderPerson would one day show the AerialPerson trap. That
+> attribution was asserted before it was checked, and the checks below do not
+> support it as the main cause. The original claim is not preserved because it
+> was wrong on the magnitude, not merely incomplete.
 
-This is that evidence. Ground-level vehicles are exactly the objects WiderPerson
-teaches the model *not* to detect, and the aerial vehicles VisDrone teaches are
-a different enough distribution that they do not compensate.
+A stock COCO `yolo26n` — which has never seen this project's training mix, and
+so carries none of its biases — was run on the same frames as a control:
 
-Two consequences, neither yet acted on:
+| on frames 500–559 | vehicles found |
+|---|---|
+| stock COCO `yolo26n`, conf 0.35 | **5.80/frame** (40 car, 17 truck, 1 bus) |
+| `weights/best.pt`, conf 0.25 (deployed) | 0.10/frame |
+| `weights/best.pt`, conf 0.10 | 1.20/frame |
+| `weights/best.pt`, conf 0.05 | 2.00/frame |
+| `weights/best.pt`, conf 0.02 | **4.60/frame** |
 
-- **CrowdHuman must be pseudo-labelled before it is trained on.** It is another
-  15,000 ground-level person-only images full of unlabelled street traffic —
-  roughly twice WiderPerson's contribution to the same failure. Its plan called
-  for measuring the unlabelled-vehicle rate first and pseudo-labelling if it
-  cleared ~3/image; this measurement is a strong prior that it will.
-- **WiderPerson should be pseudo-labelled retroactively**, and the blended
-  validation set cannot detect whether that helped — its vehicle instances are
-  overwhelmingly aerial. A ground-level vehicle val split is needed to measure
-  the fix at all.
+The control confirms roughly six vehicles are genuinely present and trivially
+detectable. **The deployed model localises them correctly and assigns them
+near-zero confidence.** That is a different failure from not having learned
+them: a model that had never seen ground-level vehicles would return nothing at
+any threshold, or return nonsense. This one returns the right boxes at 0.02.
+
+That signature — correct localisation, suppressed confidence — is what negative
+evidence produces. So the mechanism of the contamination hypothesis is right.
+The magnitude attributed to WiderPerson was not. Measured with the same stock
+control over 300 training images per dataset:
+
+| dataset | unlabelled vehicles found | images with any | labelled in the dataset |
+|---|---|---|---|
+| AerialPerson (after pseudo-labelling) | 1.49/image | 22% | 29,559 ✓ |
+| WiderPerson | **0.23/image** | 8% | **0** |
+| CrowdHuman | **0.06/image** | 3% | 0 |
+
+WiderPerson contributes on the order of ~1,800 unlabelled vehicles across its
+8,000 images — real contamination, and it should still be fixed, but two orders
+of magnitude short of AerialPerson's ~258,000 and too small to be the whole
+cause on its own.
+
+**The larger cause is an asymmetry in training coverage that was never
+noticed.** `personnel` has both aerial data (VisDrone, AerialPerson) *and*
+ground-level data (WiderPerson). The three vehicle classes have **aerial data
+only** — VisDrone is the sole source, and AerialPerson's pseudo-labels are also
+aerial. The model has effectively learned "a vehicle is a small object seen from
+above," so a large, close, horizontal-view car is off-distribution for the
+vehicle classes specifically while being perfectly in-distribution for
+`personnel`. The weak WiderPerson negatives then push the confidence of those
+already-uncertain detections below the floor.
+
+Consequences, revised:
+
+- **Do NOT pseudo-label CrowdHuman.** Measured twice, with two independent
+  detectors that agree: 0.047/image with `weights/best.pt`, 0.06/image with the
+  stock control, and only 3% of images contain a vehicle at all. The plan's
+  decision rule was to skip below ~1/image, and this is far below it. CrowdHuman
+  is dense human crowds — stadiums, gatherings, indoor scenes — not street
+  traffic, so the AerialPerson trap simply does not apply to it. The conversion
+  is sound: 339,565 person boxes over 15,000 images, ~22.6/image as expected.
+- **Pseudo-label WiderPerson anyway**, but expect it to be a small correction
+  rather than the fix.
+- **The actual fix is ground-level vehicle training data**, which nothing in
+  the current mix provides. Until then the blended validation set cannot even
+  see the problem: its vehicle instances are overwhelmingly aerial, which is
+  exactly why `light_vehicle` scores mAP50 0.860 there while returning
+  0.10/frame on a street. **A ground-level vehicle val split is a prerequisite
+  for measuring any fix at all.**
+- **Interim mitigation available today, unmeasured:** a per-class vehicle
+  confidence floor for ground view, mirroring what
+  `CONF_THRESHOLD_PERSONNEL_GROUND` does for people (§17b). The detections
+  exist at 0.05–0.10. This would trade precision for them and has not been
+  swept — do not adopt it without the sweep and a look at annotated frames,
+  since low-confidence vehicle boxes are exactly the failure of §14.
 
 **d. Duplicate boxes on single targets in dense crowds.** Several people carry
 two or three concentric boxes. Since the head is `end2end` and NMS-free (§19),

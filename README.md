@@ -225,12 +225,15 @@ Kept, not hidden. These are the honest edges of the system.
   remains is pose — nothing in the training mix contains prone or crawling
   people seen from above.
 - **Ground-level vehicle recall has collapsed.** On dense urban footage,
-  0.07 `light_vehicle` per frame on frames plainly containing six, against
-  mAP50 0.860 for that class on the blended validation set. The cause is
-  identified: WiderPerson contributes 8,000 ground-level street scenes labelled
-  for people only, presenting their unlabelled traffic to the trainer as
-  confirmed negatives. Diagnosis in §20; the fix (`pseudo_label_vehicles.py`)
-  exists and has not yet been applied to that dataset.
+  0.07 `light_vehicle` per frame on frames plainly containing six — against
+  mAP50 0.860 for that class on the blended validation set. A stock COCO
+  control finds 5.80/frame on the same frames, and the deployed model finds
+  4.60/frame at conf 0.02: it *localises* the vehicles correctly and assigns
+  them near-zero confidence. The cause is an asymmetry in training coverage —
+  `personnel` has both aerial and ground-level data, the vehicle classes have
+  aerial only, so the model has learned "a vehicle is a small object seen from
+  above." Diagnosis and the measurements in §20; the fix is ground-level
+  vehicle data, and a ground-level val split to measure it with.
 - **Confident false positives off-distribution.** Nothing in the training data
   resembles an indoor close-range scene, and the model has no learned notion of
   "not a vehicle" for that viewpoint:

@@ -60,7 +60,8 @@ from app import config
 class _SourceState:
     """One feed's accumulated overlay evidence."""
 
-    __slots__ = ("hits", "frames", "mask", "masked_fraction")
+    __slots__ = ("hits", "frames", "mask", "masked_fraction",
+                 "big_n", "big_wm", "big_wm2", "big_hm", "big_hm2", "big_mask")
 
     def __init__(self, grid: int):
         # Decayed count of frames in which each cell held a small detection,
@@ -70,6 +71,15 @@ class _SourceState:
         self.frames = 0.0
         self.mask: Optional[np.ndarray] = None
         self.masked_fraction = 0.0
+        # Large-box channel: per-cell Welford accumulators for box width and
+        # height. Not decayed -- these describe a cell's geometry, not how
+        # recently it fired, and the hit count alone carries recency.
+        self.big_n = np.zeros((grid, grid), np.float32)
+        self.big_wm = np.zeros((grid, grid), np.float32)
+        self.big_wm2 = np.zeros((grid, grid), np.float32)
+        self.big_hm = np.zeros((grid, grid), np.float32)
+        self.big_hm2 = np.zeros((grid, grid), np.float32)
+        self.big_mask: Optional[np.ndarray] = None
 
 
 class OverlayMask:
@@ -118,6 +128,9 @@ class OverlayMask:
         touched = np.zeros((grid, grid), bool)
         for d in detections:
             if not self._is_glyph_sized(d):
+                if (config.OVERLAY_LARGE_FILTER
+                        and d.get("class_id", 0) not in config.OVERLAY_LARGE_EXEMPT):
+                    self._observe_large(st, d, grid)
                 continue
             # Centre cell only, not the whole box: a box's extent is noisy at
             # 9 px, and it is where the thing sits that identifies it.
@@ -143,12 +156,55 @@ class OverlayMask:
         area = (float(d["x2"]) - float(d["x1"])) * (float(d["y2"]) - float(d["y1"]))
         return 0.0 < area <= config.OVERLAY_MAX_BOX_AREA
 
+    @staticmethod
+    def _observe_large(st: _SourceState, d: dict, grid: int) -> None:
+        """Fold one above-glyph-size box into its cell's geometry statistics."""
+        gy, gx = OverlayMask._cell(d, grid)
+        w = float(d["x2"]) - float(d["x1"])
+        h = float(d["y2"]) - float(d["y1"])
+        n = st.big_n[gy, gx] + 1.0
+        st.big_n[gy, gx] = n
+        dw = w - st.big_wm[gy, gx]
+        st.big_wm[gy, gx] += dw / n
+        st.big_wm2[gy, gx] += dw * (w - st.big_wm[gy, gx])
+        dh = h - st.big_hm[gy, gx]
+        st.big_hm[gy, gx] += dh / n
+        st.big_hm2[gy, gx] += dh * (h - st.big_hm[gy, gx])
+
+    @staticmethod
+    def _rigid_cells(st: _SourceState) -> np.ndarray:
+        """Cells whose large boxes are too geometrically identical to be real.
+
+        A world-attached object seen from a moving camera changes apparent size;
+        a painted one does not. Compares coefficient of variation rather than
+        raw spread so the test is scale-free across box sizes.
+        """
+        n = st.big_n
+        enough = n >= config.OVERLAY_LARGE_MIN_HITS
+        if not enough.any():
+            return np.zeros_like(enough)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sd_w = np.sqrt(np.maximum(st.big_wm2, 0.0) / np.maximum(n - 1.0, 1.0))
+            sd_h = np.sqrt(np.maximum(st.big_hm2, 0.0) / np.maximum(n - 1.0, 1.0))
+            cv_w = np.where(st.big_wm > 0, sd_w / np.maximum(st.big_wm, 1e-9), np.inf)
+            cv_h = np.where(st.big_hm > 0, sd_h / np.maximum(st.big_hm, 1e-9), np.inf)
+        return enough & (np.maximum(cv_w, cv_h) <= config.OVERLAY_LARGE_RIGIDITY)
+
     def _recompute(self, st: _SourceState) -> None:
         """Rebuild the mask from the persistence evidence, then apply the cap."""
         if st.frames < config.OVERLAY_WARMUP_FRAMES:
             st.mask = None
+            st.big_mask = None
             st.masked_fraction = 0.0
             return
+
+        if config.OVERLAY_LARGE_FILTER:
+            big = self._rigid_cells(st)
+            # Same fail-open cap as the glyph channel: if this would blank a
+            # large part of the frame the premise has failed.
+            st.big_mask = big if float(big.mean()) <= config.OVERLAY_MAX_FRACTION else None
+        else:
+            st.big_mask = None
 
         mask = (st.hits / max(st.frames, 1e-6)) >= config.OVERLAY_PERSISTENCE
         if config.OVERLAY_DILATE_CELLS > 0 and mask.any():
@@ -179,7 +235,7 @@ class OverlayMask:
         if not config.OVERLAY_FILTER or not detections:
             return detections
         st = self._state.get(source_id)
-        if st is None or st.mask is None:
+        if st is None or (st.mask is None and st.big_mask is None):
             return detections
 
         grid = config.OVERLAY_GRID
@@ -188,11 +244,20 @@ class OverlayMask:
             # moving_object comes from the motion pass, which by construction
             # never fires on something that isn't moving relative to the
             # world -- it cannot be a painted glyph, so it is never masked.
-            if d.get("class_id", 0) == -1 or not self._is_glyph_sized(d):
+            if d.get("class_id", 0) == -1:
                 kept.append(d)
                 continue
             gy, gx = self._cell(d, grid)
-            if not st.mask[gy, gx]:
+            if not self._is_glyph_sized(d):
+                if d.get("class_id", 0) in config.OVERLAY_LARGE_EXEMPT:
+                    kept.append(d)
+                    continue
+                # Above the glyph limit: only the rigidity channel may drop it,
+                # and only when it is enabled.
+                if st.big_mask is None or not st.big_mask[gy, gx]:
+                    kept.append(d)
+                continue
+            if st.mask is None or not st.mask[gy, gx]:
                 kept.append(d)
         return kept
 
@@ -206,6 +271,7 @@ class OverlayMask:
             "overlay_active": st.mask is not None,
             "overlay_masked_fraction": round(st.masked_fraction, 4),
             "overlay_cells": int(st.mask.sum()) if st.mask is not None else 0,
+            "overlay_large_cells": int(st.big_mask.sum()) if st.big_mask is not None else 0,
         }
 
 

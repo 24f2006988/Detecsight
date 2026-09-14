@@ -527,6 +527,53 @@ OVERLAY_MAX_BOX_AREA = float(os.getenv("BATTLESIGHT_OVERLAY_MAX_BOX_AREA", "0.01
 # this system must never have. Same reasoning as MOTION_GATED being off.
 OVERLAY_MAX_FRACTION = float(os.getenv("BATTLESIGHT_OVERLAY_MAX_FRACTION", "0.10"))
 
+# --- Large painted overlays (subtitle blocks, banners) -----------------------
+# OVERLAY_MAX_BOX_AREA above deliberately excludes big boxes from the glyph
+# channel, because a large persistent box is exactly what a real target held
+# centred in frame looks like, and masking that is the one failure this system
+# must not have. But v10.mp4 carries a burned-in subtitle block that the model
+# reads as light_vehicle at ~137x137 px -- far above the glyph limit, and
+# bursty (45 hits in frames 283-344), so it fails the persistence test too.
+#
+# This second channel keeps the safety argument by swapping the discriminator.
+# A painted block is GEOMETRICALLY RIGID: measured on v10, the subtitle cell's
+# box width varies by cv 0.0047 and height by cv 0.0092 across 40 detections,
+# i.e. sub-pixel. Real personnel boxes in the same clip and the same frames
+# vary 2.5-15x more (cv 0.0232 to 0.1357 for every cell with >= 10 samples),
+# because the world slides under a moving camera and their apparent size
+# changes. Evidence is still only gathered while the camera is established to
+# be moving, which is what makes that true.
+#
+# DEFAULT OFF. The separation is real but measured on one clip, with 2.5x of
+# margin at the closest point -- not enough to enable a suppression path by
+# default when the standing rule is that gates fail open. Turn it on per-feed
+# once a second clip with a large painted overlay confirms the threshold.
+OVERLAY_LARGE_FILTER = os.getenv("BATTLESIGHT_OVERLAY_LARGE", "0") not in ("0", "false", "False")
+
+# Detections needed in a cell before its geometry is trusted. At n=1 the
+# variance is trivially zero, which would qualify every one-off box.
+OVERLAY_LARGE_MIN_HITS = int(os.getenv("BATTLESIGHT_OVERLAY_LARGE_MIN_HITS", "10"))
+
+# max(cv_width, cv_height) at or below which a cell counts as painted. 0.015
+# sits between the measured 0.0092 (subtitle) and 0.0232 (closest real object).
+OVERLAY_LARGE_RIGIDITY = float(os.getenv("BATTLESIGHT_OVERLAY_LARGE_RIGIDITY", "0.015"))
+
+# Classes the rigidity channel may never suppress, and never learns geometry
+# from. `moving_object` (-1) is exempt for the same reason it is in the glyph
+# channel: the motion pass only fires on something moving relative to the
+# world, so it cannot be painted.
+#
+# `personnel` (0) is exempt on measurement, not principle. Replaying v10 with
+# the channel on: at conf 0.25 it removed 31 of 47 phantoms and cost zero
+# personnel, but at conf 0.10 -- the floor the ground view actually runs
+# personnel at, see CONF_THRESHOLD_PERSONNEL_GROUND -- it removed 13 real
+# personnel and zero phantoms. The extra low-confidence boxes admitted at 0.10
+# dilute a cell's geometry statistics until real detections start looking
+# rigid. A filter that deletes people at the threshold people are detected at
+# is the exact failure the fail-open rule is for, so personnel is held out of
+# this channel entirely. The phantoms this exists for are vehicles.
+OVERLAY_LARGE_EXEMPT = frozenset({-1, 0})
+
 # Frames to keep suppressing blobs after MOTION_CHRONIC_BLOB_COUNT trips once.
 # The bare threshold was not enough on its own: a scene fragmenting to just
 # UNDER the cutoff, crossing it only occasionally, builds fresh coherent tracks

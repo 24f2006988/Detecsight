@@ -24,6 +24,15 @@
 # scripts/pseudo_label_vehicles.py and README 16g) -- without them its ~258,000
 # unlabelled cars would train the model to treat aerial vehicles as background.
 #
+# BDD100K (added 2026-09-07, log section 20) is the only ground-level vehicle
+# source here. Every other dataset in the mix teaches vehicles from above, and
+# section 20 measured what that costs: 0.27 vehicles/frame on a street at the
+# deployed threshold, against 6.35 from the same model at conf 0.02. It needs
+# no pseudo-labelling -- BDD annotates cars, trucks, buses, bicycles,
+# motorcycles, riders and pedestrians exhaustively, so the AerialPerson trap
+# does not apply. Its val split is held out separately as
+# data/battlesight_bdd_val.yaml rather than added below.
+#
 # Paths are anchored at VisDrone and reach its siblings with `../`, so this file
 # names no drive and no absolute directory. It resolves against whatever
 # `yolo settings datasets_dir` is set to -- set that once per machine.
@@ -36,6 +45,7 @@ train:
   - ../WiderPerson/images/train
   - ../AerialPerson/images/train
   - ../SARD/images/train
+  - ../BDD100K/images/train
 
 val:
   - images/val

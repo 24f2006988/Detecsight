@@ -129,8 +129,41 @@ SOURCES = [
     # where the 0.143 baseline was measured and where the verdict is read.
     ("SARD train", "SARD/images/train", "train",
      "4041 tiles, prone/non-upright personnel from a UAV -- the missing pose"),
+    # BDD100K, added 2026-09-07 after log section 20. That section measured the
+    # failure and named the cause: `personnel` has aerial AND ground-level
+    # training data, the three VEHICLE classes have aerial data only. VisDrone
+    # is their sole source and AerialPerson's pseudo-labels are aerial too, so
+    # the model has learned "a vehicle is a small object seen from above" and a
+    # large, close, horizontal-view car is off-distribution for the vehicle
+    # classes specifically. Re-measured 2026-09-07 on the current post-SARD
+    # checkpoint over shibuya frames 500-559, ~6 vehicles continuously present:
+    # deployed 0.27 vehicles/frame at conf 0.25, 6.35 at conf 0.02, against a
+    # stock COCO control at 5.60. It localises them and kills them at the
+    # threshold, which is what a coverage gap looks like, not a capacity one.
+    #
+    # This is the first ground-level vehicle data in the mix. It is also the
+    # first night (39%) and adverse-weather (15%) data, and the first genuine
+    # empty-road negatives from a forward-facing camera -- which is what
+    # sections 14 and 16 wanted for the v11 phantoms and could not get from
+    # VisDrone or WiderPerson.
+    #
+    # 8,500 of ~31,200 images is ~27% of the mix, against SARD's 17.8%. That is
+    # a bigger share than anything else added here, so if the SARD result moves
+    # this is the first suspect: re-measure SARD test recall and the drone
+    # personnel floor (log 22h) after this run, not only the promotion gate.
+    # Cap it with `convert_bdd100k.py --max-train 6000` if it does dominate.
+    ("BDD100K train", "BDD100K/images/train", "train",
+     "8500 dashcam frames at 1280x720 -- the only ground-level vehicle data"),
     ("VisDrone val", "VisDrone/images/val", "val", "548"),
     ("WiderPerson val", "WiderPerson/images/val", "val", "1000"),
+    # BDD100K's val split is DELIBERATELY NOT in this list either, for the
+    # reason given below: the val set must stay byte-identical to
+    # battlesight_multi.yaml's or every mAP figure in the log stops being
+    # comparable. Its 1,500 held-out images are the ground-level vehicle val
+    # split section 20 called a prerequisite, and they are read separately
+    # through data/battlesight_bdd_val.yaml -- the same arrangement SARD test
+    # has. Putting them in here would measure the fix and destroy the
+    # regression guard in one move.
     # AerialPerson's val split is DELIBERATELY NOT in this list. Its labels are
     # people only, so every correctly-detected car in it would score as a false
     # positive and drag vehicle precision down for no real reason. Pseudo-
@@ -173,6 +206,15 @@ YAML_HEADER = """\
 # AerialPerson's TRAIN labels DO carry vehicle pseudo-labels (see
 # scripts/pseudo_label_vehicles.py and README 16g) -- without them its ~258,000
 # unlabelled cars would train the model to treat aerial vehicles as background.
+#
+# BDD100K (added 2026-09-07, log section 20) is the only ground-level vehicle
+# source here. Every other dataset in the mix teaches vehicles from above, and
+# section 20 measured what that costs: 0.27 vehicles/frame on a street at the
+# deployed threshold, against 6.35 from the same model at conf 0.02. It needs
+# no pseudo-labelling -- BDD annotates cars, trucks, buses, bicycles,
+# motorcycles, riders and pedestrians exhaustively, so the AerialPerson trap
+# does not apply. Its val split is held out separately as
+# data/battlesight_bdd_val.yaml rather than added below.
 #
 # Paths are anchored at VisDrone and reach its siblings with `../`, so this file
 # names no drive and no absolute directory. It resolves against whatever

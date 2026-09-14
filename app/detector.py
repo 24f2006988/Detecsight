@@ -49,27 +49,42 @@ class Detector:
         they get identical treatment."""
         p = Path(path)
         engine_path = p.with_suffix(".engine")
-        load_path = p
         if config.USE_TENSORRT and config.DEVICE != "cpu" and engine_path.exists():
-            load_path = engine_path
+            try:
+                return self._load_and_warm(engine_path)
+            except Exception as e:  # noqa: BLE001
+                # An engine is tied to the exact GPU, driver and TensorRT
+                # version it was built with, and the `tensorrt` package itself
+                # is absent from some environments here -- this repo has its
+                # own .venv without it, while G:/fusionsight/.venv has it.
+                # None of that is a reason to take the service down when the
+                # .pt works fine.
+                #
+                # This MUST wrap the warm-up, not only YOLO(). Ultralytics
+                # builds its backend LAZILY on first inference, so
+                # `import tensorrt` does not run until predict() is called.
+                # Guarding just the constructor looks right and does nothing:
+                # a missing tensorrt escaped as a ModuleNotFoundError out of
+                # the warm-up and killed annotate_screen.py at startup.
+                print(f"TensorRT engine at {engine_path} unusable ({e!r}); "
+                      f"falling back to {p}")
+        return self._load_and_warm(p)
 
+    def _load_and_warm(self, load_path: Path) -> YOLO:
+        """Construct one model and burn the first-inference cost at startup.
+
+        The first inference triggers CUDA kernel compilation (or, for an
+        engine, execution-context setup for this input shape) and is 10-20x
+        slower than steady state. Pay it here, not on the first live frame.
+
+        The dummy is square while an engine may be rectangular (see
+        scripts/export_engine.py --imgsz). That is fine: ultralytics reads
+        imgsz from the engine metadata and letterboxes to it. Do NOT pass
+        imgsz= here -- overriding the metadata is exactly what makes a static
+        engine reject its input.
+        """
         print(f"Loading model from {load_path} on device {config.DEVICE}")
-        try:
-            model = YOLO(str(load_path))
-        except Exception as e:  # noqa: BLE001
-            if load_path == p:
-                raise
-            # The engine is tied to the exact GPU/driver/TensorRT version it
-            # was built with -- one of those having moved on is not a reason
-            # to take the whole service down when the .pt still works fine.
-            print(f"TensorRT engine at {load_path} failed to load ({e!r}); "
-                  f"falling back to {p}")
-            model = YOLO(str(p))
-
-        # Warm up: the first inference triggers CUDA kernel compilation (or,
-        # for a dynamic-shape engine, context setup for this input shape) and
-        # is 10-20x slower than steady state. Burn that cost at startup, not
-        # on the first soldier's frame.
+        model = YOLO(str(load_path))
         dummy = np.zeros((config.IMGSZ, config.IMGSZ, 3), dtype=np.uint8)
         model.predict(dummy, device=config.DEVICE, quantize=config.QUANTIZE, verbose=False)
         return model

@@ -33,6 +33,9 @@ Full reasoning is in the linked section.
 | **Far-field second pass on by default** | Not rejected for cost but for jitter: p90 48.5 ms against a 26.9 ms median, which makes an AR overlay stutter. Kept, and off by default; good for offline annotation where latency is free. | §19 |
 | **EMA smoothing for the v7 burst** | Made it worse. Smoothing made the decision *slower*; the gate needed the decision to *last* longer, which is what `MOTION_CHRONIC_COOLDOWN` does. | §13 |
 | **`predict()` between `track()` calls** | Cost ~60% of detections, silently. Bisected by running the far-field pass with every box discarded: v5 personnel 1560 → 562 from the bare `predict()` call. Restoring `predictor.trackers` did not fix it. Fixed with a dedicated second model instance. | §19 |
+| **Raising `OVERLAY_MAX_BOX_AREA` for the v10 subtitle** | It is the module's only safety property: the size limit is what stops a drone holding a real target centred in frame from having it masked. The phantom box is 137x137 px at frame centre, which is what such a target looks like. Fixed with a rigidity test instead. | §22f |
+| **A confidence floor for the v10 phantoms** | Phantom confidence reaches 0.461; real `personnel` in the same clip reaches 0.535. The distributions overlap, and §20 already showed raising the vehicle floor is the wrong direction. | §22f |
+| **Applying the rigidity filter to `personnel`** | At conf 0.10, the floor the ground view runs personnel at, it removed 13 real personnel and zero phantoms. Low-confidence boxes dilute a cell's geometry until real detections look rigid. `personnel` is exempt. | §22g |
 | **Adding BDD100K/KITTI for the `v11` phantoms** | The diagnosis it rested on was wrong — the boxes were never on the scene, they were on the HUD. No training data would have fixed it. | §14 → §16 |
 
 ---
@@ -55,6 +58,8 @@ Full reasoning is in the linked section.
 | §18 | lights vs. people; the split-second target |
 | §19 | the far field and the 40 ms budget |
 | §20 | dense ground-level crowds, and a confirmed vehicle-label contamination |
+| §21 | SARD: pose confirmed; fine-tuning on it alone destroyed the model |
+| §22 | SARD blended: 4.7x target recall, flat on the val, a rigidity filter, and why the last epoch is not the best one |
 | [Still outstanding](#still-outstanding) · [Known limitations](#known-limitations) | open problems |
 
 ## Setup
@@ -1847,6 +1852,222 @@ rather than this project's own checkpoint: 0.060/image over 300 tiles, far
 below the ~1/image threshold. It is merged as-is and must not be
 pseudo-labelled.
 
+### 22. SARD blended: a 4.7x recall gain the validation set cannot see, and a final epoch that scored better by losing it (2026-09-06)
+
+Section 21 confirmed the pose hypothesis and rejected the method: a SARD-only
+fine-tune reached 0.870 recall on its own domain and destroyed the general model
+(blended mAP50 0.627 -> 0.065). Its conclusion was to blend SARD into the
+existing mix instead. This is that run.
+
+**a. Configuration.** `battlesight_blend`, resumed from the deployed
+`weights/best.pt`, 6 epochs on `data/battlesight_fpv.yaml`: VisDrone train
+(6,471) + VisDrone test-dev (1,610) + WiderPerson (8,000) + AerialPerson
+(2,613) + **SARD (4,041)** = 22,735 images. SARD is 17.8% of the mix. imgsz
+1280, batch 4, `close_mosaic=1`. Val is unchanged from `battlesight_multi.yaml`
+(1,548 images, 66,112 boxes), so the numbers stay comparable to section 17.
+
+Note that `optimizer=auto` overrode the configured `lr0=0.002` and selected
+AdamW at **lr 0.00125**, decaying to 0.000425. Section 21e asked for 0.001; what
+ran was 0.00125, chosen by ultralytics rather than set.
+
+CrowdHuman was dropped from this mix first, which made SARD the single variable
+against the deployed checkpoint.
+
+**Sections b through g measure the EPOCH 5 checkpoint**, kept at
+`weights/best_e5_backup.pt`. Epoch 6 finished later, took `best.pt` on
+fitness, and is a materially different model; see 22h.
+
+**b. The promotion gate says nothing happened.** `scripts/evaluate.py`, both
+checkpoints measured in one process:
+
+| | baseline | candidate |
+|---|---|---|
+| mAP50 | 0.6274 | 0.6266 |
+| recall | 0.5700 | 0.5741 |
+| precision | 0.7160 | 0.7090 |
+| personnel mAP50 | 0.7064 | 0.7030 |
+| two_wheeler | 0.4940 | 0.4940 |
+| light_vehicle | 0.8600 | 0.8590 |
+| heavy_vehicle | 0.4490 | 0.4500 |
+
+All four criteria PASS. Overall mAP50 moved -0.0008. On this evidence alone the
+run is indistinguishable from `battlesight_crowd`, which was written off as flat.
+
+**A trap worth recording.** The per-epoch `metrics/mAP50(B)` in `results.csv`
+read 0.6373 for the promoted epoch, which looks like +0.010 over the baseline.
+It is not comparable: the trainer validates at `max_det=902` (this run's
+`args.yaml`) on EMA weights, while the rubric path uses `max_det=300`, raised to
+317 on this val. Every recorded baseline in this file came through the rubric
+path. Do not compare a `results.csv` row to a number in this document.
+
+**c. The target-domain measurement is where the result is.** SARD test split,
+570 images, 732 boxes, imgsz 1280, conf 0.10, identical to section 21a:
+
+| size (px) | GT | deployed | blend | SARD-only specialist |
+|---|---|---|---|---|
+| <16 | 8 | 0.000 | 0.000 | |
+| 16-32 | 108 | 0.037 | 0.287 | |
+| 32-48 | 202 | 0.149 | 0.574 | |
+| 48-64 | 134 | 0.164 | 0.776 | |
+| 64-96 | 173 | 0.179 | 0.827 | |
+| >96 | 107 | 0.168 | 0.907 | 0.981 |
+| **overall** | **732** | **0.143** | **0.671** | 0.870 |
+
+Precision on the same split: 0.356 -> 0.503. The deployed checkpoint reproduced
+section 21a bucket for bucket, which is the control that makes the rest of this
+trustworthy.
+
+The shape matters more than the total. Section 21a's signature failure was that
+recall was FLAT at ~0.17 across every bucket, including boxes over 96 px that
+the same model finds 94% of in street imagery. That flat line is now a normal
+curve. The model did not get better at small objects. It learned the pose.
+
+**d. It transfers to the real UAV footage.** `v10.mp4`, all 374 frames,
+stateless, no cascade:
+
+| | personnel @0.25 | personnel @0.10 | phantom light_vehicle @0.25 |
+|---|---|---|---|
+| deployed | 0 (0 frames) | 22 (20 frames) | 26 |
+| blend | 71 (50 frames) | 189 (131 frames) | 47 |
+| specialist (21c) | 72 (70 frames) | 205 | 0 |
+
+The deployed row reproduces 21c exactly. At the deployed threshold the system
+goes from finding nobody in this clip to finding people in 50 of 374 frames,
+reaching the specialist's detection count without the specialist's collapse.
+
+**e. `battlesight_crowd`, measured properly for the first time.** It was
+declared flat on blended mAP50 alone, the same metric that just declared this
+run flat. Measured on the same two target-domain tests:
+
+| checkpoint | blended mAP50 | SARD recall | v10 personnel @0.25 |
+|---|---|---|---|
+| deployed | 0.627 | 0.143 | 0 |
+| `battlesight_crowd` | 0.627 | 0.175 | 2 |
+| `battlesight_blend` | 0.627 | 0.671 | 71 |
+
+The original verdict was right, and is now evidence rather than assumption:
+CrowdHuman is dense standing crowds at ground level and does not teach prone
+figures seen from altitude. But three checkpoints with identical blended mAP50
+span 0.143 to 0.671 on the failure this project exists to fix. **The promotion
+val cannot rank these runs.** It is a regression guard, not a measure of
+progress, and any future personnel run must report SARD test recall beside it.
+
+**f. One number moved the wrong way: v10 phantoms 26 -> 47.** These are not new
+in kind. Both checkpoints put `light_vehicle` boxes on the same fixed spot: on a
+64x64 grid, cell (54,32) holds 23 of the deployed model's 26 and 40 of the
+blend's 47. That is x~0.50, y~0.85, bottom centre, held across the whole clip.
+It is the burned-in subtitle block already listed in Still Outstanding as a
+`moving_object` false positive, now also read as a vehicle.
+
+`app/overlay_mask.py` removes none of them, and is right not to, for two
+independent reasons:
+
+- **Size.** Median phantom box is 0.0203 of the frame, about 137x137 px on
+  1280x720. `OVERLAY_MAX_BOX_AREA` is 0.01, so 46 of 47 fail `_is_glyph_sized`
+  and are neither learned from nor suppressed.
+- **Persistence.** They fire in one burst, frames 283-344: 45 hits against 169.3
+  decayed camera-moving frames, a ratio of ~0.27 against the required 0.30. Even
+  with the size limit lifted they would not qualify.
+
+Raising `OVERLAY_MAX_BOX_AREA` is the obvious fix and is rejected. That
+threshold is the module's only safety property. It is what stops a drone holding
+a real target centred in frame from having that target masked, and a 137x137 px
+box at frame centre is exactly what such a target looks like.
+
+A confidence threshold is also rejected: phantom confidence reaches 0.461 while
+real `personnel` in the same clip reaches 0.535, and section 20 already
+established that raising the vehicle floor is the wrong direction.
+
+**g. The fix: a second evidence channel keyed on geometric rigidity.**
+Persistence cannot separate a painted block from a held target, because both sit
+still in image space. Box GEOMETRY can. A world-attached object seen from a
+moving camera changes apparent size; a painted one does not. Measured on v10,
+over cells with at least 10 detections:
+
+| cell | n | cv width | cv height |
+|---|---|---|---|
+| (54,32) subtitle | 40 | 0.0047 | 0.0092 |
+| (28,32) personnel | 20 | 0.1143 | 0.1357 |
+| (29,32) personnel | 14 | 0.0324 | 0.0447 |
+| (27,32) personnel | 13 | 0.0128 | 0.0436 |
+| (36,26) personnel | 10 | 0.0181 | 0.0232 |
+
+`OVERLAY_LARGE_*` in `app/config.py` adds a per-cell Welford accumulator for
+above-glyph-size boxes and masks a cell at `max(cv_w, cv_h) <= 0.015` with at
+least 10 hits, still only on camera-moving frames and still under the
+`OVERLAY_MAX_FRACTION` fail-open cap. Replayed over v10:
+
+| | phantoms | personnel |
+|---|---|---|
+| off (default) @0.25 | 47 -> 47 | 71 -> 71 |
+| on @0.25 | **47 -> 16** | 71 -> 71 |
+| on @0.10 | 137 -> 137 | 190 -> 190 |
+
+**`personnel` is exempt from this channel, on measurement rather than
+principle.** Before the exemption, at conf 0.10, the floor the ground view
+actually runs personnel at, the channel removed **13 real personnel and zero
+phantoms**. The extra low-confidence boxes admitted at 0.10 dilute a cell's
+geometry until real detections start looking rigid. A filter that deletes people
+at the threshold people are detected at is the failure the fail-open rule exists
+for.
+
+**It ships disabled.** `BATTLESIGHT_OVERLAY_LARGE=0`. The separation is real but
+rests on one clip with 2.5x of margin at the closest point (0.0092 against
+0.0232), and it does nothing at conf 0.10 even for vehicles. That is not enough
+to enable a new suppression path by default. A second clip carrying a large
+painted overlay is what would justify turning it on.
+
+**h. The final epoch improved every dataset metric and lost the target.**
+Epoch 6 is the mosaic-off polish pass and it took `best.pt` on fitness. Measured
+against epoch 5, which is preserved at
+`runs/detect/battlesight_blend/weights/best_e5_backup.pt`:
+
+| | epoch 5 | epoch 6 |
+|---|---|---|
+| gate mAP50 vs 0.6274 baseline | 0.6266 (-0.0008) | **0.6337 (+0.0063)** |
+| gate recall | 0.5741 | **0.5771** |
+| SARD test recall | 0.671 | **0.673** |
+| SARD test precision | 0.503 | **0.664** |
+| v10 personnel @0.25 | **71**, in 50 frames | 15, in 15 frames |
+| v10 personnel @0.10 | **189** | 62 |
+| v10 phantom light_vehicle @0.25 | 47 | 6 |
+
+Epoch 6 wins every dataset metric. It is the only epoch of this run that clears
+the gate on merit rather than on tolerance. On the real UAV footage it finds
+79% fewer people.
+
+**Resolved by looking at the frames, not the counts.** Detections-per-frame is
+not a quality proxy here, and epoch 5 has the worse SARD precision, so the
+obvious reading is that its extra 56 boxes are false positives on vegetation.
+Rendered side by side, they are not:
+
+- frames 139 and 174: an unmistakable crouching figure in vegetation, boxed by
+  epoch 5 at 0.30 and 0.26, and returned by epoch 6 as nothing at all.
+- frame 246: an upright, high-contrast figure crossing open ground. Both
+  checkpoints find it.
+- the 15 frames epoch 6 fires on are a STRICT SUBSET of epoch 5's 50. Epoch 6
+  finds nothing that epoch 5 misses.
+
+The pattern is that epoch 6 keeps the easy targets and drops the hard ones. The
+crouching-in-vegetation detections sit at 0.26-0.30, just above the deployed
+0.25 floor, and the final epoch pushed them under it. That is the exact failure
+this run exists to fix, so the run improved its own scores by giving back most
+of its own result.
+
+The phantom drop from 47 to 6 is the same conservatism, not an independent win.
+
+**Epoch 5 is the checkpoint to promote**, on the standing rule that a phantom
+contact is a nuisance and a suppressed real contact is the failure this system
+must never have. Section 22b-g measures epoch 5 throughout and stands as
+written.
+
+Two things follow for future runs. `close_mosaic` is not free on this project:
+it sharpens the model onto the training distribution and costs off-distribution
+recall, and `v10.mp4` is currently the only asset that can detect that. And a
+run must not be judged on its last epoch by default -- the fitness that selects
+`best.pt` is blended-val mAP, which section 22e already established cannot see
+this failure.
+
 ### Still outstanding
 
 - **Personnel are missed on the real UAV footage** (section 16e). On `v10.mp4`
@@ -1859,6 +2080,11 @@ pseudo-labelled.
   targets this **has now been run and promoted** (section 17) — but whether it
   actually put boxes on the people in `v10` is still unverified, and the val
   metrics cannot answer it.
+  - **Substantially improved 2026-09-06 (section 22).** Blending SARD into the
+    training mix took SARD test recall 0.143 -> 0.671 and v10 `personnel` at
+    conf 0.25 from 0 to 71, across 50 of 374 frames, with the promotion gate
+    flat. Frames 186 and 300 specifically are still unverified, and the
+    blended val remains unable to measure any of this.
 - ~~The AerialPerson download may still be in flight.~~ **Landed 2026-09-02** and is in the promoted run's train split (2,613 images). Original bullet: Zenodo throttles this
   network to ~125 KB/s. `scripts/prepare_training.py` writes a yaml naming only
   datasets that exist, so training can start without it and be rerun later.
@@ -1867,6 +2093,10 @@ pseudo-labelled.
   (which exempts `moving_object` by design) nor the coherence gate rejects
   them. Not chased; the same attachment argument that drives `overlay_mask.py`
   would apply if it becomes a problem.
+  - **2026-09-06:** section 22f traces the v10 `light_vehicle` phantoms to the
+    same subtitle block: 40 of 47 boxes land in one 64x64 grid cell at bottom
+    centre. Section 22g adds an opt-in rigidity channel that removes 31 of
+    them. It is disabled by default and exempts `personnel`.
 - ~~Training never finished.~~ **Done 2026-08-31.** `battlesight_v1` resumed
   from epoch 13 and completed 30/30 in 2.58 h, on `battlesight_multi.yaml`
   (VisDrone + WiderPerson) rather than VisDrone alone. Promoted after

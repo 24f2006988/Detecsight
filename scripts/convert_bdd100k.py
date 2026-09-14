@@ -92,8 +92,8 @@ def datasets_root() -> Path:
     Deliberately NOT repo-relative. There is no `datasets/` directory in this
     checkout; the data is on another drive and shared with another project, so
     a hardcoded relative default would silently resolve to nothing. That is the
-    failure mode CLAUDE.md records for datasets_dir -- pointing it at a root
-    that lacks a converted dataset drops it from the blend without an error.
+    known failure mode for datasets_dir: pointing it at a root that lacks a
+    converted dataset drops that dataset from the blend without an error.
     """
     env = os.getenv("BATTLESIGHT_DATASETS")
     if env:

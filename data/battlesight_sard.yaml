@@ -1,55 +1,12 @@
-# SARD-only fine-tune -- the prone/non-upright personnel experiment.
+# SARD alone: 4,041 UAV frames of people in terrain, including prone and
+# crouching, which is the pose case nothing else in the mix has.
 #
-# HAND-WRITTEN, unlike battlesight_fpv.yaml. scripts/prepare_training.py does
-# not generate or touch this file: it exists to run ONE controlled experiment
-# with a single new variable, not to describe the deployed training mix.
+# Training on this ALONE was measured and REJECTED (log 21): target recall
+# 0.143 -> 0.870, but blended personnel mAP50 0.706 -> 0.221 with two classes
+# collapsed. Catastrophic forgetting. The data was right, training on it alone
+# was not -- it is blended in battlesight_fpv.yaml instead.
 #
-# THE QUESTION THIS ANSWERS. The longest-standing open failure in this project
-# is personnel missed in vegetation from a UAV. Resolution, palette, viewpoint
-# and augmentation were each ruled out by direct experiment; what remained was
-# pose, and nothing in the training mix contained a prone or crawling person
-# seen from above.
-#
-# Measured baseline, deployed weights/best.pt on SARD test (570 images, 732
-# boxes, imgsz 1280, conf 0.10) -- this is the number to beat:
-#
-#     size(px)    GT   found   recall        WiderPerson val for contrast
-#        <16       8       0    0.000                          0.187
-#      16-32     108       4    0.037                          0.622
-#      32-48     202      30    0.149                          0.805
-#      48-64     134      22    0.164                          0.855
-#      64-96     173      31    0.179                          0.937
-#       >96      107      18    0.168                          0.940
-#     overall 105 of 732, recall 0.143, precision 0.356        0.707
-#
-# Read the >96 px row twice. A person larger than 96 px is trivially
-# detectable, and this model finds 94% of them in street imagery and 17% of
-# them here. Recall is FLAT across every size bucket, which means this is not a
-# size problem at all -- it is pose, background and viewpoint. That is the
-# clearest evidence the project has that the remaining gap is domain, not
-# resolution, and it is why the fix is data rather than a P2 head. (The <32 px
-# far-field gap is a SEPARATE problem; do not judge this run on it.)
-#
-# TAXONOMY IS KEPT AT 4 CLASSES even though SARD labels only personnel. The
-# checkpoint stays architecturally interchangeable with weights/best.pt, so it
-# drops into DRONE_MODEL_PATH and ?view= with no code change.
-#
-# EXPECT THE VEHICLE CLASSES TO DEGRADE. They get no positive examples for the
-# whole run. That is accepted rather than overlooked: this is a search-and-
-# rescue specialist, where vehicles are not the job. It is NOT a drop-in
-# replacement for weights/best.pt -- promote it, if at all, to the per-view
-# slot, and measure the damage with scripts/evaluate.py before doing even that.
-#
-# SARD's unlabelled-vehicle rate was measured at 0.060/image with a stock COCO
-# control (4.7% of images), far below the ~1/image threshold, so it is merged
-# as-is and must NOT be pseudo-labelled. See scripts/convert_sard.py.
-#
-# images/test is DELIBERATELY ABSENT from both lists below. It is the held-out
-# on-domain set for the exact failure this run exists to fix, and the baseline
-# above was measured on it.
-#
-# Resolves against `yolo settings datasets_dir`, like every other yaml here.
-
+# Kept for measuring SARD in isolation, not for training.
 path: SARD
 
 train:

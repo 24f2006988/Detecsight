@@ -1,68 +1,6 @@
 """Convert CrowdHuman annotations to YOLO format, folded into the personnel class.
 
-Source: http://www.crowdhuman.org/ -- 15,000 train / 4,370 val images, ~22.6
-annotated people per image with heavy mutual occlusion. CC-BY-NC-4.0.
-
-NOTE ON THE DOWNLOAD: the Google Drive links on crowdhuman.org return HTTP 404
-as of 2026-09-03 (verified, including the 23 MB .odgt -- so it is not the
-large-file interstitial). The working source is the first author's own mirror,
-`sshao0516/CrowdHuman` on Hugging Face; scripts/fetch_crowdhuman.sh pulls it.
-
-Why this dataset specifically: measured on WiderPerson val, this system's
-recall collapses with target size -- 0.187 below 16 px and 0.622 at 16-32 px,
-and 41% of all people fall under 32 px. CrowdHuman is the closest public match
-to a crowded bodycam frame: WiderPerson (already in the mix) is dense but is
-static street photography, while CrowdHuman is far more varied in pose,
-occlusion and viewpoint. YOLO26 is end2end/NMS-free, so occlusion recall cannot
-be bought by loosening NMS -- suppression is learned, which makes it a training
-data problem.
-
-Expects the official layout extracted to datasets/CrowdHuman_raw/:
-    Images/<id>.jpg            all splits flattened into one directory
-    annotation_train.odgt      one JSON object per line
-    annotation_val.odgt
-
-The .odgt records carry no image dimensions, so each image header is read to
-normalise the boxes. Verified against the real files on 2026-09-03:
-
-    {"ID": "273271,c9db000d5146c15",
-     "gtboxes": [{"tag": "person" | "mask",
-                  "fbox": [x, y, w, h],      # full body, may exit the frame
-                  "vbox": [x, y, w, h],      # visible part only
-                  "hbox": [x, y, w, h],      # head
-                  "extra":     {"box_id": .., "occ": .., "ignore": 0|1, ..},
-                  "head_attr": {"ignore": .., "occ": .., "unsure": ..}}, ...]}
-
-Conversion decisions, and why each one:
-
-  * Use "fbox" (full body), NOT "vbox". Every other person label in this project
-    -- WiderPerson classes 1-3, AerialPerson, VisDrone pedestrian/people -- is a
-    whole-person box. Mixing visible-only boxes into the same class would teach
-    two different box conventions and blur the regression head.
-  * tag == "mask"    -> DROP. That is CrowdHuman's ignore region, not a person.
-  * extra.ignore == 1 -> DROP. Same reasoning as WiderPerson's classes 4/5: no
-    reliable per-instance box. Note `ignore` is ABSENT on ordinary boxes rather
-    than 0, so it must be read with a default.
-  * class id 0 (personnel), per data/battlesight.yaml.
-  * CLAMP to the image, then drop what is degenerate. CrowdHuman fboxes
-    routinely extend past the frame for occluded people, and a negative-width
-    box silently corrupts a YOLO label file.
-  * An image whose every box was dropped is SKIPPED, not written as an empty
-    label -- the rule convert_aerialperson.py established, because a silently
-    empty label teaches the model to MISS real people.
-
-Expected counts (read from the .odgt files directly, so these are gates, not
-estimates): 339,565 train person boxes over 15,000 images, 99,481 val boxes
-over 4,370. An order of magnitude off means the fbox/vbox choice or the ignore
-filter is wrong.
-
-CrowdHuman val is TRAIN-ONLY in this project and does NOT go in the yaml's val
-list -- see plan_2026-09-02_crowdhuman.md section 2.4. It is converted anyway so
-it can serve as a held-out on-domain set with clean person-only ground truth.
-
-    python scripts/convert_crowdhuman.py
-    python scripts/convert_crowdhuman.py --splits val --limit 20   # quick check
-    python scripts/convert_crowdhuman.py --link                    # hardlink images
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import json

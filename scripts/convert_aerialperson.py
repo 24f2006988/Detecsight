@@ -1,35 +1,7 @@
 """Convert the Small Object Aerial Person Detection Dataset into this
 project's YOLO layout.
 
-Source: Zenodo record 7740081, CC-BY-4.0 -- UAV frames over the University of
-Cyprus campus and Civil Defense exercises, annotated for people, top-view, with
-a deliberate small-object focus. 3,136 images shipped with YOLO, COCO and VOC
-annotations; this reads the YOLO ones.
-
-Why this dataset specifically: the deployed model misses nearly every genuine
-person on the real UAV clips in this repo while putting boxes on vegetation.
-VisDrone is urban aerial traffic and WiderPerson is clean ground-level street
-pedestrians -- neither contains a person seen small from altitude against
-natural terrain, which is the operational case. Measured on this set, the
-median box is ~11 px across at imgsz 1280, matching the regime the detector
-actually has to work in rather than the clean, large-target imagery it was
-trained on.
-
-Its single class ("people", per the record's labels.txt) is already class id 0,
-which is `personnel` in this project's taxonomy -- so unlike
-remap_visdrone.py / convert_widerperson.py, the label files need no class
-remapping and are copied verbatim. This script still parses and revalidates
-every line rather than trusting that, because a silent taxonomy mismatch would
-poison the training set in a way that only shows up as a mysterious accuracy
-regression later.
-
-The source's Test split HAS ground-truth labels, so it is folded into train
-(more on-domain data is worth more than a second held-out split here); the
-Valid split becomes val. Run scripts/train.py against
-data/battlesight_fpv.yaml afterwards.
-
-    python scripts/convert_aerialperson.py
-    python scripts/convert_aerialperson.py --raw datasets/AerialPerson_raw --out datasets/AerialPerson
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import zipfile

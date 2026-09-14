@@ -1,51 +1,7 @@
 """Add vehicle pseudo-labels to a personnel-only dataset, so mixing it in
 doesn't teach the model that vehicles are background.
 
-THE PROBLEM THIS SOLVES. AerialPerson (Zenodo 7740081) annotates *people only*.
-Its imagery is top-down aerial over a university campus -- which means large
-parking lots, and the cars in them carry no label. That is the SAME viewpoint
-VisDrone teaches vehicles from, so training on the union as-is presents every
-one of those cars as a confirmed negative for `light_vehicle`.
-
-Measured before this script existed, by running `weights/drone_best.pt` over 40
-random AerialPerson train images at conf 0.35:
-
-    personnel        11.6 / image
-    light_vehicle    97.3 / image      <-- none of these are labelled
-    two_wheeler       0.8 / image
-    heavy_vehicle     0.5 / image
-
-Extrapolated across the 2,613 train images that is roughly **258,000
-unlabelled vehicles** -- more negative vehicle evidence than VisDrone supplies
-positive. Left alone it would not dilute the vehicle classes, it would actively
-destroy them.
-
-WiderPerson has the same shape of problem (ground-level street scenes,
-personnel-only labels, unlabelled traffic) and has been in this project's
-training mix since `battlesight_multi.yaml`. It is less severe there only
-because ground-level cars look different from VisDrone's aerial ones, so the
-contradiction is weaker. Worth revisiting if vehicle metrics ever look wrong.
-
-THE FIX. Pseudo-label the vehicles with the existing drone-view checkpoint and
-merge them into the label files, leaving the human-annotated person boxes
-untouched. Pseudo-labels are imperfect, but a wrong box on a real car is a far
-smaller error than 258,000 confident false negatives.
-
-Guardrails, because pseudo-labelling is easy to get wrong:
-  * Ground-truth person boxes are NEVER modified or removed.
-  * A pseudo-box overlapping any ground-truth person is dropped -- the human
-    label wins; we do not relabel a person as a vehicle.
-  * Only vehicle classes are added. Personnel is exactly what this dataset
-    already annotates properly, and the model's own personnel predictions are
-    the thing being fixed, so they are not trusted here.
-  * A high confidence floor by default: precision matters more than recall for
-    a pseudo-label, since a false positive becomes a permanent wrong label.
-  * Originals are backed up to labels/<split>.orig/ before anything is written,
-    and --restore puts them back.
-
-    python scripts/pseudo_label_vehicles.py                 # label the dataset
-    python scripts/pseudo_label_vehicles.py --dry-run       # report only
-    python scripts/pseudo_label_vehicles.py --restore       # undo
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import shutil

@@ -1,54 +1,6 @@
 """Static HUD/OSD overlay rejection.
 
-The operational footage this system is pointed at is not clean camera output:
-it is an FPV/UAV feed with a heads-up display burned into it -- crosshair
-reticles, telemetry readouts, range/zoom text, unit emblems. Those glyphs are
-small, high-contrast and rectangular, which is exactly what a VisDrone-trained
-model has learned a distant vehicle looks like from above.
-
-Measured on `v11.mp4` (FPV drone over open terrain) before this filter existed:
-54,658 `light_vehicle` boxes across 1,746 frames -- 31.3 per frame, on a clip
-containing no vehicles at all. A spatial heatmap of those boxes reproduced the
-HUD exactly: one box per dash of each dotted reticle line, one per character of
-the "UEX10 002587" telemetry string, one per character of the range readout.
-Median false box was 9x9 px, i.e. glyph-sized, and the boxes covered 1.6% of
-the frame -- the overlay's footprint.
-
-The distinguishing property is not appearance, it is ATTACHMENT: a HUD glyph is
-painted onto the sensor output, so it holds the same image-space position while
-the world slides underneath it. A real object -- moving or parked -- is attached
-to the world and moves across the frame as the camera pans. So this tracks, per
-source, which grid cells keep producing detections *while the camera is
-established to be moving*, and treats a cell that always does as overlay.
-
-Three conditions, each closing a different failure of the others:
-
-  1. Detection persistence, accumulated ONLY on camera-moving frames. On a
-     static camera every real parked car would look persistent too, so those
-     frames contribute no evidence at all.
-  2. Small boxes only. Evidence is gathered from, and suppression applied to,
-     detections below OVERLAY_MAX_BOX_AREA of the frame. A HUD glyph is by
-     nature tiny (9x9 px measured on v11.mp4); this is what stops a drone
-     that deliberately holds a real target centred in frame from ever having
-     that target masked, however persistent it looks.
-  3. A hard cap (OVERLAY_MAX_FRACTION): if this would mask a large part of the
-     frame the assumptions have broken down, and the whole filter disables
-     itself rather than blinding the detector.
-
-Failing open is the only acceptable direction for a situational-awareness
-system -- a phantom contact is a nuisance, a suppressed real one is the thing
-this must never do.
-
-TRIED AND REJECTED: requiring the cell's pixels to be temporally static as
-well, on the theory that a painted glyph doesn't change while a real target
-does. It carries no information on this footage and was removed. A glyph sits
-on top of a CHANGING background, and an analog FPV feed is noisy everywhere,
-so HUD cells are not pixel-static at all. Measured on v11.mp4, 900 frames:
-of the 40 cells with detection persistence >= 0.3, requiring cell std <= 0.35x
-the frame's median cell std kept only 11 of them -- while loosening the ratio
-far enough to keep them (1.0x) admitted 2048 cells, half the grid, which
-discriminates nothing. Box size (condition 2) does the safety job that test
-was there for, and does it on evidence that actually separates the two cases.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 from typing import Dict, List, Optional
 

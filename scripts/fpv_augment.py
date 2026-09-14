@@ -1,38 +1,6 @@
 """Training-time augmentation profiles that model this system's real input.
 
-Why this exists: the deployed model is trained on VisDrone (clean, high-
-resolution urban aerial stills) and WiderPerson (clean, well-lit ground-level
-pedestrians), but the footage it is actually pointed at is FPV/UAV video --
-analog or heavily-compressed digital, low resolution, motion-blurred from an
-airframe that never holds still, with wide swings in exposure. Nothing in the
-training set looks like that, and it shows: `personnel` sits at 0.567 mAP50 on
-the clean val set while missing nearly every genuine person on the real clips.
-
-Ultralytics 8.4 takes a custom Albumentations list through the first-class
-`augmentations=` training argument (`hyp.augmentations`, see
-ultralytics/data/augment.py -> Albumentations.__init__), so this needs no
-monkeypatching of library internals. NOTE albumentations was not installed in
-this environment at all before this profile was written, which means every
-checkpoint prior to it was trained with ZERO blur, noise or compression
-augmentation -- ultralytics silently skips the whole Albumentations stage when
-the import fails, and only logs it at info level.
-
-Every transform here is pixel-level, not spatial: boxes are untouched, so this
-composes safely with the geometric augmentation train.py already sets
-(mosaic/scale/degrees/flips) and cannot corrupt a label.
-
-The order mirrors a real capture chain rather than being arbitrary --
-optics (blur) -> sensor resolution (downscale) -> sensor noise -> codec
-(compression) -> display/exposure. Degradations interact, and applying them in
-capture order is what makes the result look like real bad video instead of a
-pile of independent filters.
-
-DELIBERATELY MODERATE. Targets in this domain are ~11 px across (measured: the
-median VisDrone val object at imgsz 1280, and the median box in the aerial
-person set). Degradation strong enough to be visually dramatic erases an 11 px
-person outright and teaches the model to fit noise against a label with no
-evidence left under it, which is worse than no augmentation. Blur radii and
-downscale factors below are capped with that in mind.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 
 PROFILES = ("none", "fpv")
@@ -94,16 +62,7 @@ def build(profile: str):
         # --- palette: false-colour and non-natural colour mappings ---
         # This is not cosmetic. v10.mp4 is an EO/IR-style feed whose vegetation
         # renders MAGENTA, nothing like the natural greens and greys of every
-        # training image. Both the fine-tuned model and a stock COCO yolo26s
-        # miss almost every clearly-visible person in it (COCO found 1 of ~5),
-        # and the people there are 50-60 px -- large, not small -- so
-        # resolution is not what is failing. Colour and pose are.
-        #
-        # Ultralytics' own hue knob is hsv_h, which defaults to 0.015: a
-        # +/-1.5% hue rotation, far too narrow to span a false-colour palette.
-        # A wide hue rotation plus occasional channel shuffle makes the model
-        # rely on shape and texture instead of learned colour priors, which is
-        # the only thing that transfers across sensor palettes.
+        # See ENGINEERING_LOG.md for the measurements behind this.
         A.HueSaturationValue(hue_shift_limit=90, sat_shift_limit=40,
                              val_shift_limit=25, p=0.35),
         A.ChannelShuffle(p=0.10),

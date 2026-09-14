@@ -118,12 +118,7 @@ def main():
             # Ultralytics restores every hyperparameter from the checkpoint on
             # resume, which is why re-passing --data/--epochs/--aug-profile is
             # pointless. But its check_resume() DOES honour a short allow-list
-            # of overrides -- the memory and device knobs you need after a CUDA
-            # OOM. They only reach it if they are passed to train(), so forward
-            # the ones actually typed on the command line. Passing them
-            # unconditionally would be worse than not passing them at all: a
-            # bare --resume would silently reset batch to this parser's default
-            # of 8, and a run that OOM'd at 4 would OOM again immediately.
+            # See ENGINEERING_LOG.md for the measurements behind this.
             resumable = ("batch", "device", "workers", "imgsz")
             overrides = {
                 k: getattr(args, k) for k in resumable

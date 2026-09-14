@@ -56,16 +56,7 @@ class Detector:
                 # An engine is tied to the exact GPU, driver and TensorRT
                 # version it was built with, and the `tensorrt` package itself
                 # is absent from some environments here -- this repo has its
-                # own .venv without it, while G:/fusionsight/.venv has it.
-                # None of that is a reason to take the service down when the
-                # .pt works fine.
-                #
-                # This MUST wrap the warm-up, not only YOLO(). Ultralytics
-                # builds its backend LAZILY on first inference, so
-                # `import tensorrt` does not run until predict() is called.
-                # Guarding just the constructor looks right and does nothing:
-                # a missing tensorrt escaped as a ModuleNotFoundError out of
-                # the warm-up and killed annotate_screen.py at startup.
+                # See ENGINEERING_LOG.md for the measurements behind this.
                 print(f"TensorRT engine at {engine_path} unusable ({e!r}); "
                       f"falling back to {p}")
         return self._load_and_warm(p)
@@ -440,12 +431,7 @@ class Detector:
                 # Containment (intersection / blob area), NOT IoU. A walking
                 # person's swinging leg or bag is a small blob sitting entirely
                 # inside a large personnel box; its IoU with that box is
-                # blob_area/person_area, which is far below any sane threshold,
-                # so on IoU the blob escaped and was re-reported as a separate
-                # phantom 'moving_object' stacked on a person already detected.
-                # Measured on v3.mp4: 425 such boxes, 22% of all moving_object
-                # output. What matters is whether the blob is already accounted
-                # for by a detection, and that is containment.
+                # See ENGINEERING_LOG.md for the measurements behind this.
                 ix = max(0.0, min(blob_box[2], det_box[2]) - max(blob_box[0], det_box[0]))
                 iy = max(0.0, min(blob_box[3], det_box[3]) - max(blob_box[1], det_box[1]))
                 overlap = max(ix * iy / blob_area, iou_xyxy(blob_box, det_box))
@@ -635,16 +621,7 @@ class Detector:
             # Stage 1+2 (app/motion_filter.py): background subtraction, then
             # size/aspect/trajectory-coherence gates. Cheap, CPU, downscaled --
             # incoherent jitter (wind-blown foliage) dies here and never costs
-            # GPU time at all.
-            # With MOTION_GATED off (the standing default) nothing on the model
-            # path reads `blobs` until _claim_motion_blobs runs at the end, so
-            # this CPU stage and the GPU pass are independent -- and running
-            # them in sequence costs their SUM for no reason. Profiled on
-            # v5.mp4: motion filter 23.6 ms median against a 52.2 ms total, so
-            # this stage was ~45% of the frame budget while the GPU idled.
-            # Both sides release the GIL (OpenCV, TensorRT), so overlapping
-            # them costs max() instead of sum. The gated branches below DO read
-            # blobs, so they wait for the result immediately.
+            # See ENGINEERING_LOG.md for the measurements behind this.
             blobs_future = None
             if config.MOTION_PARALLEL and not config.MOTION_GATED:
                 blobs_future = self._pool.submit(
@@ -697,13 +674,7 @@ class Detector:
             # Stage 4: static HUD/OSD overlay rejection (app/overlay_mask.py).
             # Runs before the exclusion pass because it is the cheaper test and
             # drops the bulk of the boxes on FPV/UAV footage -- 31 per frame of
-            # reticle dashes and telemetry glyphs on v11.mp4 -- so the exclusion
-            # stage's per-crop embedding work is spent only on plausible ones.
-            # `observe` is fed the UNFILTERED list, since a cell only becomes
-            # known-overlay by repeatedly producing detections; filtering first
-            # would erase the evidence the mask is built from. Camera state
-            # comes from the motion pass's existing ego estimate rather than a
-            # second one of our own.
+            # See ENGINEERING_LOG.md for the measurements behind this.
             camera_moving = bool(
                 motion_detector.debug_info(source_id).get("moving_camera", False))
             overlay_mask.observe(frame, detections, source_id, camera_moving)

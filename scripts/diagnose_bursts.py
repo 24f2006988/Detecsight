@@ -1,28 +1,7 @@
 """Per-frame detection/motion diagnostics across the sample clips, with
 automatic burst detection.
 
-This is the regression harness for anything that touches app/motion_filter.py
-or the motion-related thresholds in app/config.py. The README's fixes 7-9 and
-11 all cite a script by this name as what verified them; it was missing from
-the checkout (see README "Still outstanding"), so this is a reconstruction --
-treat its numbers as a fresh baseline, not as a continuation of the ones
-quoted in those sections.
-
-A "burst" is a frame whose count of a given class sits far above the local
-rolling median for that clip -- the shape every explosion bug in this project
-has had. Rolling median rather than a global mean because the clips have
-genuinely busy and genuinely quiet stretches, and a global threshold flags the
-busy ones as bugs.
-
-    python scripts/diagnose_bursts.py                       # every vN.mp4, ground view
-    python scripts/diagnose_bursts.py v10.mp4 --view drone
-    python scripts/diagnose_bursts.py --motion-only         # no GPU, motion pass only
-    python scripts/diagnose_bursts.py --json runs/bursts.json
-
---motion-only skips the classifier entirely and exercises just MotionDetector.
-That is the half every burst fix so far has lived in, it runs on CPU, and it
-therefore works while the GPU is busy with a training run. Use the full path
-(the default) to confirm a fix against what actually gets served.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import json

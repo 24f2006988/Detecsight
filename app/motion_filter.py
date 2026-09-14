@@ -116,14 +116,7 @@ class MotionDetector:
         # Exponential moving average of the estimated camera shift, per
         # source -- see EGO_SHIFT_EMA_ALPHA in app/config.py. Same problem as
         # the residual EMA above, one step earlier: a slow, genuine pan whose
-        # frame-to-frame shift hovers near EGO_STATIC_SHIFT flickers the
-        # moving/static BRANCH CHOICE itself frame to frame (RANSAC noise in
-        # the affine fit, not motion blur), routing some frames of a real pan
-        # through plain MOG2 instead of ego-compensated diffing. MOG2 then
-        # sees real pan-smeared structure -- not jitter -- as foreground,
-        # which is coherent by construction and sails through the
-        # trajectory-coherence gate the other chronic-noise gates were never
-        # tuned to catch (see fix 13 in README.md).
+        # See ENGINEERING_LOG.md for the measurements behind this.
         self._shift_ema: Dict[str, float] = {}
         # Frames still to suppress after MOTION_CHRONIC_BLOB_COUNT last
         # tripped, per source -- see MOTION_CHRONIC_COOLDOWN in app/config.py.
@@ -309,15 +302,7 @@ class MotionDetector:
         # Smoothed before the branch decision, not read raw: a slow genuine
         # pan whose per-frame shift hovers near EGO_STATIC_SHIFT (RANSAC
         # noise in the affine fit, frame to frame) otherwise flickers which
-        # branch runs -- a few frames misroute to plain MOG2, which then sees
-        # real pan-smeared structure as foreground. That foreground is
-        # coherent (it's real motion, not jitter), so it passes the
-        # trajectory-coherence gate below untouched -- a burst of confident
-        # moving_object boxes on content that never actually stopped moving.
-        # Same fix shape as EGO_RESIDUAL_EMA_ALPHA (fix 9a), one step
-        # earlier: dropped (not carried through a None reading) whenever ego
-        # estimation itself fails, so a genuine loss of tracking doesn't drag
-        # a stale average toward "static".
+        # See ENGINEERING_LOG.md for the measurements behind this.
         if ego is not None:
             prev_shift_ema = self._shift_ema.get(source_id, shift)
             shift_ema = (config.EGO_SHIFT_EMA_ALPHA * shift
@@ -351,12 +336,7 @@ class MotionDetector:
             # Smoothed with an EMA, not read raw: on a fast handheld pan,
             # motion blur keeps this fraction from settling clearly above or
             # below EGO_MAX_RESIDUAL -- it hovers across the line frame to
-            # frame (measured on v6.mp4 frames 320-334: 0.017-0.028 against a
-            # 0.02 threshold). Reading it raw made the reliable/unreliable
-            # flag flip every frame, and the frames that landed "reliable" by
-            # chance emitted a burst of moving_object boxes off noise that
-            # never actually cleared. The EMA reads a stretch that's
-            # consistently near the line as consistently over it.
+            # See ENGINEERING_LOG.md for the measurements behind this.
             prev_ema = self._ego_residual_ema.get(source_id, fg_fraction)
             ema = (config.EGO_RESIDUAL_EMA_ALPHA * fg_fraction
                    + (1.0 - config.EGO_RESIDUAL_EMA_ALPHA) * prev_ema)
@@ -373,12 +353,7 @@ class MotionDetector:
                 # Measured 2026-09-02: dropping here unconditionally was
                 # disabling the motion channel for 224 of 225 frames on v2 and
                 # v9, and 535 of 1068 on v6 -- i.e. almost always, on exactly
-                # the fast-handheld footage this system exists for. A brief
-                # human appearance in any of those frames was unreportable by
-                # construction. So only the clearly-hopeless band still drops;
-                # the band just above the threshold runs DEGRADED instead of
-                # blind (structure test required, no fast path, raised
-                # coherence bar) -- see EGO_RESIDUAL_DEGRADED_FACTOR.
+                # See ENGINEERING_LOG.md for the measurements behind this.
                 if ema > config.EGO_MAX_RESIDUAL * config.EGO_RESIDUAL_DEGRADED_FACTOR:
                     self._tracks[source_id] = []
                     dbg["dropped_reason"] = "ego_residual"
@@ -429,38 +404,7 @@ class MotionDetector:
         # Chronic fine texture (brick paving, gravel, compression grain) can
         # fragment into dozens of small blobs while the raw foreground
         # FRACTION checked above stays comfortably under its threshold -- each
-        # blob is individually small, there's just a lot of them, and the
-        # fraction gates alone don't see that. Measured on v7.mp4 (a drone
-        # hovering over brick paving): 30-58 blobs surviving the size/aspect
-        # gate above for 30+ consecutive frames, while the foreground fraction
-        # sat at 0.02-0.11 the whole time, under MOTION_MOG2_MAX_FRACTION's
-        # 0.12 (that threshold was tuned only against v3.mp4's tree line,
-        # which fragmented at a much higher 0.19-0.27 fraction -- it never
-        # generalised to a scene that fragments finer but at lower coverage).
-        # Quiet real frames on the same clip and on v6.mp4 sat at 0-16 blobs,
-        # so 20 is a real gap, not a hair trigger. This is a density check
-        # alongside the two fraction checks, not instead of either: whichever
-        # branch produced `fg`, a real scene doesn't have this many
-        # independently-moving things, so treat it the same as the other two
-        # chronic-noise gates -- drop the frame's blobs rather than let the
-        # coherence gate below score a fragment swarm as a burst of targets.
-        # The gate itself, plus a cooldown. The bare threshold was not enough:
-        # a scene that fragments to just UNDER the cutoff for several frames at
-        # a time (v7.mp4's brick paving sits at 17-20 blobs against a cutoff of
-        # 20, crossing it only occasionally) gets to build fresh coherent
-        # tracks in the gaps between individual trips, and those tracks emit a
-        # burst the moment enough of them reach MOTION_COHERENCE_MIN_POINTS.
-        # Measured on v7.mp4 frame 261: 7 moving_object boxes against a local
-        # baseline of 0.
-        #
-        # Note this is deliberately NOT the EMA treatment used for
-        # EGO_SHIFT_EMA_ALPHA / EGO_RESIDUAL_EMA_ALPHA -- that was tried here
-        # first and made the burst worse (7 -> 13 boxes, see the config
-        # comment). Smoothing delays the trip, because the averaged value
-        # climbs slower than the raw spike; this gate has to fire fast. What it
-        # needs is not a slower decision but a LONGER one: once a scene is
-        # established as fragmenting, stay suppressed for a few frames so the
-        # sub-threshold gaps stop being usable as track-building windows.
+        # See ENGINEERING_LOG.md for the measurements behind this.
         cooldown = self._chronic_cooldown.get(source_id, 0)
         chronic = len(sized) > config.MOTION_CHRONIC_BLOB_COUNT
         if chronic:

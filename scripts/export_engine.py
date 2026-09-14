@@ -1,20 +1,6 @@
 """Export a .pt checkpoint to a TensorRT engine for GPU-accelerated inference.
 
-Run once per checkpoint, and again any time a new best.pt is promoted:
-
-    python scripts/export_engine.py
-
-app/detector.py's Detector.load() automatically prefers weights/best.engine
-over weights/best.pt when it exists (see config.USE_TENSORRT) -- no other
-config change is needed. Delete the .engine file (or set
-BATTLESIGHT_USE_TENSORRT=0) to force the .pt path again.
-
-Requires the `tensorrt` Python package matching your installed CUDA/driver
-(https://pypi.org/project/tensorrt/, or the NVIDIA pip index for your CUDA
-version). Install that yourself before running this: unlike onnx/onnxslim,
-which ultralytics will auto-install as needed, the wrong tensorrt build will
-fail to import rather than fail to export, so it isn't something to leave to
-autoinstall.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 from pathlib import Path

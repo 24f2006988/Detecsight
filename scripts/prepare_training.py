@@ -1,18 +1,6 @@
 """Get the training set ready, then print the exact command to launch.
 
-The point of this script is that the training run can be started at any time
-without first working out what state the data is in. The AerialPerson download
-(Zenodo 7740081, ~3.7 GB) is slow on this network and may or may not have
-finished; this checks, converts it if it has, and writes a dataset yaml naming
-only the sources that actually exist on disk. Ultralytics fails hard on a yaml
-that lists a missing path, so generating it from reality rather than hope is
-what makes "start it whenever" safe.
-
-    python scripts/prepare_training.py            # check, convert, write yaml
-    python scripts/prepare_training.py --imgsz 960 --batch 8
-
-It never starts training itself -- it prints the command. Launching a multi-hour
-GPU job is the user's call, not a side effect of a status check.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import os
@@ -89,69 +77,13 @@ SOURCES = [
     # CrowdHuman is TEMPORARILY OUT of the mix, 2026-09-05. Two reasons, and
     # the second is the better one:
     #
-    # 1. It broke the machine. With CrowdHuman in, the blend is 37,735 images
-    #    and ~970,000 boxes, and training died of SYSTEM RAM exhaustion (32 GB)
-    #    partway through epoch 1. Windows multiprocessing spawns rather than
-    #    forks, so every dataloader worker holds a FULL copy of the label
-    #    arrays -- CrowdHuman alone contributes 339,565 boxes over 15,000
-    #    images, about 35% of the total. Lowering --workers helps but the disk
-    #    here reads at ~15 MB/s, so starving the loader has its own cost.
-    #
-    # 2. Leaving it out makes this a SINGLE-VARIABLE run. SARD is then the only
-    #    change against the deployed checkpoint's mix, so if the result moves,
-    #    the cause is not ambiguous. Section 21 is a fresh reminder of what
-    #    ambiguity costs.
-    #
-    # It also avoids compounding a known problem: CrowdHuman is personnel-only
-    # and shifts the class balance from 44.8% to 59.8% personnel, diluting the
-    # vehicle classes from 46.1% to 33.5% -- exactly when section 20 found
-    # ground-level vehicle recall already collapsed.
-    #
-    # Put it back as its own run once SARD is settled. It is converted,
-    # registered and measured clean (0.047 unlabelled vehicles/image, so no
-    # pseudo-labelling needed); only this line is in the way.
-    # ("CrowdHuman train", "CrowdHuman/images/train", "train",
-    #  "15000, dense occluded ground-level personnel"),
-    # SARD, added 2026-09-05 after log section 21. Prone and non-upright
-    # personnel seen from a UAV over grass, forest shade and quarries -- the
-    # pose distribution nothing else in this mix contains. Fine-tuning on it
-    # ALONE took its own held-out recall 0.143 -> 0.870 and then failed every
-    # promotion criterion by catastrophic forgetting (personnel mAP50
-    # 0.706 -> 0.221). It belongs in the blend, not on its own: at 4,041 of
-    # ~37,700 images it cannot dominate, and every other class keeps receiving
-    # positive examples throughout.
-    #
-    # SARD's val AND test splits are deliberately absent from the val list, for
-    # the same reason AerialPerson's is: the val set must stay byte-identical to
-    # battlesight_multi.yaml's, or every mAP figure recorded in the log stops
-    # being comparable. SARD performance is tracked separately and explicitly,
-    # with scripts/eval_size_recall.py against SARD/images/test -- which is
-    # where the 0.143 baseline was measured and where the verdict is read.
+    # See ENGINEERING_LOG.md for the measurements behind this.
     ("SARD train", "SARD/images/train", "train",
      "4041 tiles, prone/non-upright personnel from a UAV -- the missing pose"),
     # BDD100K, added 2026-09-07 after log section 20. That section measured the
     # failure and named the cause: `personnel` has aerial AND ground-level
     # training data, the three VEHICLE classes have aerial data only. VisDrone
-    # is their sole source and AerialPerson's pseudo-labels are aerial too, so
-    # the model has learned "a vehicle is a small object seen from above" and a
-    # large, close, horizontal-view car is off-distribution for the vehicle
-    # classes specifically. Re-measured 2026-09-07 on the current post-SARD
-    # checkpoint over shibuya frames 500-559, ~6 vehicles continuously present:
-    # deployed 0.27 vehicles/frame at conf 0.25, 6.35 at conf 0.02, against a
-    # stock COCO control at 5.60. It localises them and kills them at the
-    # threshold, which is what a coverage gap looks like, not a capacity one.
-    #
-    # This is the first ground-level vehicle data in the mix. It is also the
-    # first night (39%) and adverse-weather (15%) data, and the first genuine
-    # empty-road negatives from a forward-facing camera -- which is what
-    # sections 14 and 16 wanted for the v11 phantoms and could not get from
-    # VisDrone or WiderPerson.
-    #
-    # 8,500 of ~31,200 images is ~27% of the mix, against SARD's 17.8%. That is
-    # a bigger share than anything else added here, so if the SARD result moves
-    # this is the first suspect: re-measure SARD test recall and the drone
-    # personnel floor (log 22h) after this run, not only the promotion gate.
-    # Cap it with `convert_bdd100k.py --max-train 6000` if it does dominate.
+    # See ENGINEERING_LOG.md for the measurements behind this.
     ("BDD100K train", "BDD100K/images/train", "train",
      "8500 dashcam frames at 1280x720 -- the only ground-level vehicle data"),
     ("VisDrone val", "VisDrone/images/val", "val", "548"),
@@ -159,66 +91,14 @@ SOURCES = [
     # BDD100K's val split is DELIBERATELY NOT in this list either, for the
     # reason given below: the val set must stay byte-identical to
     # battlesight_multi.yaml's or every mAP figure in the log stops being
-    # comparable. Its 1,500 held-out images are the ground-level vehicle val
-    # split section 20 called a prerequisite, and they are read separately
-    # through data/battlesight_bdd_val.yaml -- the same arrangement SARD test
-    # has. Putting them in here would measure the fix and destroy the
-    # regression guard in one move.
-    # AerialPerson's val split is DELIBERATELY NOT in this list. Its labels are
-    # people only, so every correctly-detected car in it would score as a false
-    # positive and drag vehicle precision down for no real reason. Pseudo-
-    # labelling it instead would be worse: the pseudo-labels come from
-    # drone_best.pt, which is the baseline the rubric compares against, so the
-    # metric would partly reward agreeing with the model under test.
-    #
-    # Leaving it out has a second benefit: the val set stays identical to
-    # battlesight_multi.yaml's, so eval_rubric.py numbers remain directly
-    # comparable to every figure recorded in README's history.
-    #
-    # The 523 images stay on disk with clean ground truth as a held-out
-    # on-domain set -- evaluate personnel on it explicitly when wanted:
-    #   yolo val model=... data=... classes=0
+    # See ENGINEERING_LOG.md for the measurements behind this.
 ]
 
 YAML_HEADER = """\
-# BattleSight AR -- generated by scripts/prepare_training.py. Do not hand-edit;
-# rerun that script instead, so the file always names paths that exist.
+# Generated by scripts/prepare_training.py. Do not hand-edit -- rerun that
+# script, so the file always names paths that exist.
 #
-# Same 4-class taxonomy as battlesight.yaml / battlesight_multi.yaml.
-# battlesight_multi.yaml is deliberately left untouched so the historical
-# numbers in README's "Detection accuracy work" stay reproducible against it.
-#
-# VisDrone's test-dev split is TRAINING data here: all 1,610 of its images
-# carry ground-truth labels and were used by neither train nor val, so this is
-# a free ~25% increase in VisDrone training data at no cost to any held-out
-# set. AerialPerson (Zenodo 7740081, CC-BY-4.0) is the only source containing a
-# person seen small from altitude against natural terrain, which is the case
-# the deployed model fails hardest on.
-#
-# AerialPerson contributes to TRAIN ONLY. Its val split is held out of the
-# metric on purpose -- it labels people but not the many cars in its aerial
-# imagery, so scoring vehicles against it would be meaningless, and pseudo-
-# labelling it would partly measure agreement with the baseline model that
-# generated those labels. The val set here is therefore identical to
-# battlesight_multi.yaml's, which keeps eval_rubric.py numbers directly
-# comparable to the figures recorded in README's history.
-#
-# AerialPerson's TRAIN labels DO carry vehicle pseudo-labels (see
-# scripts/pseudo_label_vehicles.py and README 16g) -- without them its ~258,000
-# unlabelled cars would train the model to treat aerial vehicles as background.
-#
-# BDD100K (added 2026-09-07, log section 20) is the only ground-level vehicle
-# source here. Every other dataset in the mix teaches vehicles from above, and
-# section 20 measured what that costs: 0.27 vehicles/frame on a street at the
-# deployed threshold, against 6.35 from the same model at conf 0.02. It needs
-# no pseudo-labelling -- BDD annotates cars, trucks, buses, bicycles,
-# motorcycles, riders and pedestrians exhaustively, so the AerialPerson trap
-# does not apply. Its val split is held out separately as
-# data/battlesight_bdd_val.yaml rather than added below.
-#
-# Paths are anchored at VisDrone and reach its siblings with `../`, so this file
-# names no drive and no absolute directory. It resolves against whatever
-# `yolo settings datasets_dir` is set to -- set that once per machine.
+# See ENGINEERING_LOG.md for the measurements behind this.
 """
 
 

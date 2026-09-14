@@ -1,19 +1,6 @@
 """Run a video file, camera or stream through the Detector, with boxes drawn.
 
-Batch equivalent of scripts/test_stream.py: that script pushes frames over the
-live WebSocket to test the running API; this one calls the Detector directly
-(same class, same tracking/motion logic) so it works without a server running,
-and produces something you can actually look at instead of console output.
-
-    python scripts/annotate_video.py v1.mp4                  # file -> annotated file
-    python scripts/annotate_video.py v1.mp4 --show           # ...and watch it go
-    python scripts/annotate_video.py 0                       # webcam, live overlay
-    python scripts/annotate_video.py rtsp://cam/stream       # network feed
-    python scripts/annotate_video.py 0 --output live.mp4     # live, also recorded
-
-A file source ends on its own; a camera or stream runs until 'q'. Note this is
-the local-preview path -- the AR client gets normalised boxes over
-WS /ws/track/{source_id} and draws its own overlay.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import os

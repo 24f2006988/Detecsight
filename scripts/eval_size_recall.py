@@ -1,36 +1,6 @@
 """Recall stratified by ground-truth box size -- are we losing distant targets?
 
-This is the only tool here that measures the thing which actually limits this
-system. Overall mAP50 hides it: 41% of the people in ground-level data are under
-32 px, but they are a minority of the instance-weighted metric, so a model can
-gain mAP50 while still missing most of the far field.
-
-Measured 2026-09-02 on weights/best.pt (the battlesight_fpv checkpoint),
-300 WiderPerson val images, imgsz 1280, conf 0.10 -- BASELINE TO BEAT:
-
-    size(px)     GT   found   recall
-       <16     1427     267    0.187
-     16-32     2214    1378    0.622
-     32-48     1426    1148    0.805
-     48-64     1128     964    0.855
-     64-96     1481    1388    0.937
-      >96      1207    1134    0.940
-    overall: 6279 found of 8883, precision 0.662
-
-Near targets are effectively solved (0.94); all the loss is distance. Note that
-raising imgsz does NOT fix it -- 1280->1536 gains +0.4% detections for +46% cost
-and the LARGER buckets degrade, because above the trained size the model is
-off-distribution for its own scale priors (README section 19).
-
-Usage:
-    $env:PYTHONPATH="."
-    python scripts\\eval_size_recall.py
-    python scripts\\eval_size_recall.py --images datasets/CrowdHuman/images/val --limit 500
-    python scripts\\eval_size_recall.py --weights runs/detect/battlesight_crowd/weights/best.pt
-
-Windows note: keep the `if __name__ == "__main__":` guard. A bare ultralytics
-call without it deadlocks on this machine and looks like slow disk I/O -- the
-tell is process memory staying perfectly static.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import glob

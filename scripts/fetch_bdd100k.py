@@ -2,28 +2,7 @@
 vehicles on. Resumable: re-run after any interruption and it fetches only what
 is missing.
 
-WHY A SCRIPT AND NOT A URL IN THE README. The official BDD100K hosts
-(dl.cv.ethz.ch, bdd-data.berkeley.edu) do not resolve from this network --
-NXDOMAIN, not a throttle, so waiting does not help. `dgural/bdd100k` on
-HuggingFace is an ungated 10,000-image mirror of the detection set with the
-labels bundled, and HuggingFace does resolve. It serves one file per request
-with no archive endpoint, so 10,001 requests is the only way in and that wants
-a thread pool rather than a shell loop.
-
-Stdlib only, deliberately. huggingface_hub would do this in four lines, but it
-is not installed in G:/fusionsight/.venv and that environment is shared with a
-frozen demo project -- adding a package to it to download a dataset is a poor
-trade. Nothing here needs more than urllib.
-
-    python scripts/fetch_bdd100k.py
-    python scripts/fetch_bdd100k.py --verify           # re-check sizes, refetch bad files
-
-Re-running it is normal and cheap -- it skips what is on disk, so a rate-limited
-first pass is finished by a second one rather than restarted.
-
-~650 MB over 10,002 files, about 6 minutes. Then:
-
-    python scripts/convert_bdd100k.py
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import json

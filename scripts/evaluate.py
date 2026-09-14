@@ -1,22 +1,6 @@
 """The promotion gate, as one command.
 
-A checkpoint does not ship here because its mAP went up. It ships because it
-clears four criteria against the deployed model and does not lose ground on the
-metric that actually limits this system -- recall on small, distant targets.
-That ritual existed before this script did, but it was spread across two other
-scripts and a runbook, which is a poor place for the rule that decides what
-reaches production.
-
-    python scripts/evaluate.py                       report on what is deployed
-    python scripts/evaluate.py runs/detect/battlesight_crowd/weights/best.pt
-    python scripts/evaluate.py <candidate> --json results.json
-
-Exit status is 0 only when every criterion passes, so this is usable as a gate
-in a pipeline rather than something a human has to read and interpret.
-
-Windows note: keep the `if __name__ == "__main__":` guard. A bare ultralytics
-val call without it deadlocks on this machine and looks like slow disk I/O --
-the tell is process memory staying perfectly static.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import json

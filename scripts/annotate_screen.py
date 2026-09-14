@@ -3,22 +3,7 @@ testing against anything already playing on your monitor (a YouTube video in
 a browser, a video call, another app's preview window) without downloading it
 first or wiring up a camera.
 
-Sibling of scripts/annotate_video.py: same Detector, same drawing, same
---view/--weights/--output/--show conventions. The only difference is where
-frames come from -- mss grabs a screen region instead of cv2.VideoCapture
-reading a file/camera/stream.
-
-    python scripts/annotate_screen.py                          # primary monitor, preview only
-    python scripts/annotate_screen.py --window chrome          # just that window, tracks it if it moves
-    python scripts/annotate_screen.py --region 100,100,1280,720
-    python scripts/annotate_screen.py --window chrome --output capture.mp4
-    python scripts/annotate_screen.py --view drone              # aerial-view checkpoint
-
-Runs until 'q' in the preview window, or Ctrl+C if running with --output and
-no --show (the file written so far is kept either way). Screen capture has no
-native frame rate -- like the webcam/stream path in annotate_video.py, this
-reads-infers-draws as fast as inference allows and does not pace itself to
-match the source video's playback speed.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import os

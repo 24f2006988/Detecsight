@@ -1,29 +1,7 @@
 """Stream a video, camera, or network stream to a running server over WebRTC,
 drawing the returned detections as a live overlay.
 
-This is the real live-feed path added on top of app/routers/webrtc.py: this
-script stands in for an AR client's camera + WebRTC sender, and the overlay
-drawn here is exactly what a real client would build itself from the same
-detection JSON (app/schemas.py DetectionResponse) -- nothing about the wire
-format differs between this script and a real device.
-
-Needs a running server (unlike scripts/annotate_video.py, which calls the
-Detector directly with no networking):
-
-    uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-Then, in another terminal:
-
-    python scripts/webrtc_stream.py v1.mp4                    # file, live overlay window
-    python scripts/webrtc_stream.py v1.mp4 --output out.mp4   # ...and record the overlay
-    python scripts/webrtc_stream.py 0                          # webcam, live overlay
-    python scripts/webrtc_stream.py --url http://192.168.1.5:8000 v1.mp4  # remote server
-
-The overlay you see is deliberately not synced frame-exact to what was sent:
-frames are captured and displayed continuously while detections arrive
-asynchronously and get drawn as soon as they land, using whatever the latest
-result is -- that is the actual behaviour a live AR client sees, not an
-artifact of this script.
+See ENGINEERING_LOG.md for the measurements behind this.
 """
 import argparse
 import asyncio

@@ -200,11 +200,13 @@ class Detector:
 
     @staticmethod
     def _conf_threshold_for(view: str, class_name: str) -> float:
-        """Per-class/per-view confidence floor. Currently only one override
-        exists (see CONF_THRESHOLD_PERSONNEL_GROUND in app/config.py) --
-        everything else uses the global CONF_THRESHOLD."""
-        if view == "ground" and class_name == "personnel":
-            return config.CONF_THRESHOLD_PERSONNEL_GROUND
+        """Per-class/per-view confidence floor. personnel carries its own floor
+        in BOTH views (CONF_THRESHOLD_PERSONNEL_GROUND / _DRONE in
+        app/config.py); everything else uses the global CONF_THRESHOLD."""
+        if class_name == "personnel":
+            if view == "ground":
+                return config.CONF_THRESHOLD_PERSONNEL_GROUND
+            return config.CONF_THRESHOLD_PERSONNEL_DRONE
         return config.CONF_THRESHOLD
 
     @classmethod
@@ -216,6 +218,8 @@ class Detector:
         floor = config.CONF_THRESHOLD
         if view == "ground":
             floor = min(floor, config.CONF_THRESHOLD_PERSONNEL_GROUND)
+        else:
+            floor = min(floor, config.CONF_THRESHOLD_PERSONNEL_DRONE)
         return floor
 
     def _to_detections(self, result, source_id: str, tracking: bool, view: str = "ground") -> List[dict]:

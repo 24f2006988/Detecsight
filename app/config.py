@@ -56,6 +56,29 @@ CONF_THRESHOLD = float(os.getenv("BATTLESIGHT_CONF", "0.25"))
 # so drone view keeps 0.25. Kept personnel-only to avoid re-inviting the
 # low-confidence vehicle hallucination of log 14. Full sweep in log 17b.
 CONF_THRESHOLD_PERSONNEL_GROUND = float(os.getenv("BATTLESIGHT_CONF_PERSONNEL_GROUND", "0.10"))
+
+# The same floor, for the DRONE view. Added 2026-09-06 with the SARD-blended
+# checkpoint (log 22h), which is more conservatively calibrated than its
+# predecessor: on v10.mp4 it scores four genuine personnel at 0.117-0.256,
+# every one of them under the global 0.25, while the checkpoint before it put
+# the same four at 0.328-0.535. Nothing was lost in capability -- it finds all
+# four -- but a fixed threshold turned a calibration shift into four missed
+# people, which is why this floor now exists for both views rather than one.
+#
+# 0.10 is not inherited from the ground floor, it is measured. Sweeping SARD
+# test (570 images, 732 hand-labelled boxes, UAV over terrain, i.e. the drone
+# view domain) puts the F2 optimum at exactly 0.10 for BOTH checkpoints:
+#
+#   conf   recall  precision  F2
+#   0.05   0.709   0.507      0.657
+#   0.10   0.673   0.661      0.671   <- optimum
+#   0.15   0.645   0.733      0.661
+#   0.25   0.571   0.834      0.610
+#
+# F2 rather than F1 for the reason section 17b gives: a missed contact costs
+# more than a spurious one. F1 would put this at 0.20 and cost 10 points of
+# recall.
+CONF_THRESHOLD_PERSONNEL_DRONE = float(os.getenv("BATTLESIGHT_CONF_PERSONNEL_DRONE", "0.10"))
 # WARNING: a NO-OP for the model's own inference, and always has been. YOLO26's
 # head reports `end2end: True` -- NMS-free one-to-one, so `iou=` is ignored.
 # Sweeping 0.5/0.6/0.7/0.8 gave byte-identical results at every value.

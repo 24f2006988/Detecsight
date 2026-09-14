@@ -2061,6 +2061,33 @@ contact is a nuisance and a suppressed real contact is the failure this system
 must never have. Section 22b-g measures epoch 5 throughout and stands as
 written.
 
+**i. That conclusion was wrong, and the error was the comparison itself.**
+Epoch 6 is deployed. What 22h does above is compare two differently-calibrated
+checkpoints at one fixed threshold, which is not a comparison of the models --
+it is a comparison of where each one happens to sit relative to 0.25. The
+detection counts that argument rests on (71 against 15) are also fewer distinct
+targets than they sound: the 35 disagreement frames are about four people
+tracked across consecutive frames.
+
+Compared instead at each checkpoint's own F2 optimum on SARD test, epoch 6 wins
+outright:
+
+| at conf 0.10 | recall | precision | F2 |
+|---|---|---|---|
+| epoch 5 | 0.672 | 0.500 | 0.629 |
+| **epoch 6** | 0.673 | **0.661** | **0.671** |
+
+Epoch 6 does see all four v10 targets. It scores them at 0.117-0.256, just
+under the global floor, which is a calibration difference and not a capability
+loss -- and it is what `CONF_THRESHOLD_PERSONNEL_DRONE = 0.10` now exists for.
+With that floor the four targets return at 23, 1, 12 and 3 detections.
+
+So the rule is not "prefer the epoch with more boxes". It is: **never compare
+two checkpoints at one fixed threshold.** Compare each at its own operating
+point, then choose the threshold separately. 22h reached the right suspicion
+from the wrong evidence, and the frames were what settled it in both
+directions.
+
 Two things follow for future runs. `close_mosaic` is not free on this project:
 it sharpens the model onto the training distribution and costs off-distribution
 recall, and `v10.mp4` is currently the only asset that can detect that. And a

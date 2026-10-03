@@ -16,30 +16,12 @@ The image sets `BATTLESIGHT_PUBLIC_DEMO=1`, which removes `/train` and `/exclude
 This is the one I would pick. A Docker Space is free on CPU (about 16 GB of RAM when I last looked, check the current limits) and gives you a public URL.
 
 1. Create a new Space at huggingface.co/new-space and choose the Docker SDK.
-2. A Space reads its settings from the top of its own `README.md`. Do not put these in the GitHub README. Make a branch for it:
+2. Log in on your machine: `hf auth login --add-to-git-credential` (the token needs write access).
+3. From this repo, run `bash scripts/deploy_space.sh <your-username>/<space-name>`.
 
-```bash
-git checkout -b space
-```
+The script pushes a fresh one-commit copy of the repo with the few header lines a Space needs at the top of its README. It does not push this repo's history, because Hugging Face rejects any history that contains a file over 10 MB and the first commit here has an old checkpoint in it. `DRY_RUN=1` builds the copy and stops before the push.
 
-then add this to the very top of `README.md` on that branch:
-
-```
----
-title: DetecSight
-sdk: docker
-app_port: 8000
----
-```
-
-3. Push that branch to the Space:
-
-```bash
-git remote add space https://huggingface.co/spaces/<your-username>/detecsight
-git push space space:main
-```
-
-4. Wait for the build. The first request after it starts downloads the checkpoint, so give it a minute.
+Wait for the build. The first request after it starts downloads the checkpoint, so give it a minute.
 
 Spaces go to sleep when nobody uses them and take a while to wake up, which is fine for a portfolio link.
 

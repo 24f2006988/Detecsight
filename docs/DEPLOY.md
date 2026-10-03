@@ -5,14 +5,7 @@ The service runs on a CPU, so it does not need a GPU host. It does need about 2 
 ## Before any host
 
 1. Make the repo public, or at least make the release public. The container downloads `best.pt` from a GitHub release on first start, and a private repo returns a 404 to an anonymous download.
-2. Upload the current checkpoint as a release. The `v1.0.0` release on this repo is the old checkpoint from before SARD, and it does not match the numbers in the README.
-
-```bash
-cp weights/best.pt best.pt
-sha256sum best.pt > best.pt.sha256
-gh release create v1.1.0 best.pt best.pt.sha256 --title "v1.1.0 SARD-blended checkpoint" \
-  --notes "Trained on VisDrone, WiderPerson, AerialPerson and SARD. See ENGINEERING_LOG.md section 22."
-```
+2. The `v1.0.0` release carries the checkpoint the README numbers come from (the SARD-blended one). If you retrain, upload the new one as a new release and set `DETECSIGHT_WEIGHTS_TAG` to it.
 
 3. Build the image once locally and look at it: `docker build -t detecsight . && docker run -p 8000:8000 detecsight`, then open `http://localhost:8000`.
 
@@ -69,7 +62,7 @@ Render and similar hosts set a `PORT` variable and the image listens on it.
 | `BATTLESIGHT_CORS_ORIGINS` | `*` | comma separated list of allowed origins |
 | `BATTLESIGHT_MAX_UPLOAD_MB` | `10` | bigger uploads get a 413 |
 | `BATTLESIGHT_IMGSZ` | `1280` | lower it to `960` or `640` if the host is too slow, but small people get missed |
-| `DETECSIGHT_WEIGHTS_TAG` | `v1.1.0` | which release the container downloads |
+| `DETECSIGHT_WEIGHTS_TAG` | `v1.0.0` | which release the container downloads |
 | `DETECSIGHT_REPO` | `24f2006988/Detecsight` | where it downloads from |
 
 There is no rate limit and no login. If this becomes public and gets used, put something in front of it.

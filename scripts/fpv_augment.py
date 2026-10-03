@@ -60,9 +60,8 @@ def build(profile: str):
         A.CLAHE(clip_limit=(1, 4), p=0.10),
 
         # --- palette: false-colour and non-natural colour mappings ---
-        # This is not cosmetic. v10.mp4 is an EO/IR-style feed whose vegetation
-        # renders MAGENTA, nothing like the natural greens and greys of every
-        # See ENGINEERING_LOG.md for the measurements behind this.
+        # not cosmetic: v10.mp4 is an EO/IR-style feed where vegetation renders magenta,
+        # nothing like the natural greens in the training data
         A.HueSaturationValue(hue_shift_limit=90, sat_shift_limit=40,
                              val_shift_limit=25, p=0.35),
         A.ChannelShuffle(p=0.10),

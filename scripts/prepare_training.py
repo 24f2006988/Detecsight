@@ -74,24 +74,18 @@ SOURCES = [
     ("WiderPerson train", "WiderPerson/images/train", "train", "8000, ground personnel"),
     ("AerialPerson train", "AerialPerson/images/train", "train",
      "UAV personnel over natural terrain -- the missing domain"),
-    # CrowdHuman is TEMPORARILY OUT of the mix, 2026-09-05. Two reasons, and
-    # the second is the better one:
-    #
-    # See ENGINEERING_LOG.md for the measurements behind this.
+    # CrowdHuman is out of the mix for now. It moved nothing in training and is
+    # mostly dense human crowds, not street traffic (log sections 20 and 22)
     ("SARD train", "SARD/images/train", "train",
      "4041 tiles, prone/non-upright personnel from a UAV -- the missing pose"),
-    # BDD100K, added 2026-09-07 after log section 20. That section measured the
-    # failure and named the cause: `personnel` has aerial AND ground-level
-    # training data, the three VEHICLE classes have aerial data only. VisDrone
-    # See ENGINEERING_LOG.md for the measurements behind this.
+    # BDD100K was added for ground-level vehicles. Personnel has aerial and
+    # ground data, but the three vehicle classes only had aerial data (log section 20)
     ("BDD100K train", "BDD100K/images/train", "train",
      "8500 dashcam frames at 1280x720 -- the only ground-level vehicle data"),
     ("VisDrone val", "VisDrone/images/val", "val", "548"),
     ("WiderPerson val", "WiderPerson/images/val", "val", "1000"),
-    # BDD100K's val split is DELIBERATELY NOT in this list either, for the
-    # reason given below: the val set must stay byte-identical to
-    # battlesight_multi.yaml's or every mAP figure in the log stops being
-    # See ENGINEERING_LOG.md for the measurements behind this.
+    # BDD100K val is left out on purpose. The val set has to stay identical to
+    # battlesight_multi.yaml, or the mAP figures in the log stop being comparable
 ]
 
 YAML_HEADER = """\

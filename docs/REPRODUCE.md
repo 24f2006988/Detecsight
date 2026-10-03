@@ -9,7 +9,7 @@ makes them checkable.
 
 ```bash
 pip install -e ".[serve,gpu]"
-bash scripts/fetch_weights.sh v1.1.0
+bash scripts/fetch_weights.sh v1.0.0
 yolo settings datasets_dir="<where your datasets live>"
 ```
 

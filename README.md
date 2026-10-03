@@ -140,7 +140,7 @@ Boxes come back normalised from 0 to 1. Each feed keeps its own tracker and moti
 
 ```bash
 pip install -e ".[serve]"
-bash scripts/fetch_weights.sh v1.1.0
+bash scripts/fetch_weights.sh v1.0.0
 uvicorn app.main:app --port 8000     # no --reload, it reloads the model onto the GPU every time
 pytest
 ```

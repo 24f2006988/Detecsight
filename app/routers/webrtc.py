@@ -1,23 +1,8 @@
-"""WebRTC transport for live feeds -- the low-latency alternative to
-/ws/track/{source_id}.
+"""WebRTC transport for live feeds, an alternative to /ws/track/{source_id}.
 
-WebSockets run over TCP: one dropped packet stalls the whole connection until
-it is retransmitted (head-of-line blocking), and every frame pays a
-base64/JPEG encode-decode round trip. WebRTC carries video over UDP/SRTP --
-a lost or late frame is simply skipped, which is exactly what a live AR
-overlay wants (recency over completeness), and it lets the client
-hardware-encode instead of shipping raw JPEGs.
-
-Signaling here is a single HTTP POST (offer in, answer out); there is no
-separate signaling server to run. The client should open its own data channel
-labelled "detections" before creating its offer -- this endpoint also opens
-one itself, so a client that skips that step still gets results on whichever
-channel comes up. Detection JSON on that channel has the exact same shape as
-the WebSocket path (app/schemas.py DetectionResponse): nothing about
-app/detector.py changes, only how frames arrive and results leave.
-
-/ws/track/{source_id} is untouched and keeps working -- this is an additional
-transport, not a replacement, so existing clients need no changes.
+WebRTC runs over UDP, so a late or lost frame is skipped and not waited for, which
+suits a live overlay. Signaling is one HTTP POST (offer in, answer out). Results go
+over a data channel labelled "detections", with the same JSON as the WebSocket path.
 """
 import asyncio
 import json
@@ -31,8 +16,7 @@ from app.detector import detector
 
 router = APIRouter(prefix="/webrtc", tags=["streaming"])
 
-# Tracked so app/main.py's shutdown can close every open connection instead of
-# leaving UDP sockets and their per-frame inference loops running past exit.
+# kept so shutdown in main.py can close every open connection
 _peer_connections: set[RTCPeerConnection] = set()
 
 
@@ -42,8 +26,7 @@ class SessionDescription(BaseModel):
 
 
 def _send(channel, payload: dict):
-    # The channel can close between this check and the send if the client
-    # drops mid-frame -- a normal disconnect, not a server error.
+    # the channel can close while sending if the client drops, which is normal
     if channel is not None and channel.readyState == "open":
         try:
             channel.send(json.dumps(payload))
@@ -53,12 +36,7 @@ def _send(channel, payload: dict):
 
 @router.post("/offer/{source_id}")
 async def offer(source_id: str, body: SessionDescription):
-    """Standard WebRTC HTTP signaling: POST an SDP offer, get an SDP answer.
-
-    source_id works exactly like on /ws/track/{source_id} -- it is the key
-    into Detector's per-feed history/tracker/motion state, so multiple
-    devices stay isolated from each other the same way they already do.
-    """
+    """POST an SDP offer, get an SDP answer. source_id works like on /ws/track/{source_id}."""
     if detector.model is None:
         raise HTTPException(503, "Model not loaded")
 
@@ -68,8 +46,7 @@ async def offer(source_id: str, body: SessionDescription):
 
     @pc.on("datachannel")
     def on_datachannel(channel):
-        # A client-opened channel takes over from the server-opened one so
-        # results end up wherever the client is actually listening.
+        # a channel the client opens replaces ours
         if channel.label == "detections":
             state["channel"] = channel
 
@@ -89,17 +66,13 @@ async def offer(source_id: str, body: SessionDescription):
             try:
                 while True:
                     frame = await track.recv()
-                    # bgr24: what cv2/ultralytics expect everywhere else in
-                    # this codebase (app/routers/track.py, app/routers/detect.py).
+                    # bgr24 is what cv2 and ultralytics expect
                     img = frame.to_ndarray(format="bgr24")
-                    # Same blocking call, same lock, same four-stage cascade
-                    # as the WebSocket path -- only the transport differs.
+                    # same call as the WebSocket path
                     result = await run_in_threadpool(detector.track, img, source_id)
                     _send(state["channel"], result)
             except Exception as e:  # noqa: BLE001
-                # Raised by aiortc as the normal way this loop ends when the
-                # client stops sending (track ended) -- not worth more than a
-                # log line.
+                # aiortc raises this when the client stops sending, which is normal
                 print(f"[webrtc] feed {source_id} track ended: {e!r}")
 
         asyncio.ensure_future(consume())

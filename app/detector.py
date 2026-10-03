@@ -1,4 +1,4 @@
-"""Model wrapper: loads once, serves many. Also holds the moving-target logic."""
+"""Loads the model once and serves many requests. Also has the moving-target logic."""
 import threading
 import time
 from collections import OrderedDict, deque
@@ -18,73 +18,47 @@ from app.overlay_mask import overlay_mask
 class Detector:
     def __init__(self):
         self.model: Optional[YOLO] = None
-        # Extra view-specific models, keyed by view name (currently just
-        # "drone" -- see config.DRONE_MODEL_PATH). Absent unless that weights
-        # file exists, in which case _model_for() falls back to self.model.
+        # extra models per view, only "drone" for now (config.DRONE_MODEL_PATH)
         self._view_models: Dict[str, YOLO] = {}
-        # source_id -> LRU of {track_id -> deque of (cx, cy) normalised centroids}
+        # source_id -> {track_id -> deque of (cx, cy)}, kept as an LRU
         self._history: Dict[str, "OrderedDict[int, deque]"] = {}
-        # (view, source_id) -> that feed's own list of ultralytics tracker
-        # objects. Keyed by view too: each YOLO model instance owns its own
-        # predictor, so a feed switching view is a different tracker slot, not
-        # a shared one.
+        # (view, source_id) -> that feed's own ultralytics trackers
         self._trackers: Dict[tuple, list] = {}
-        # per-source frame counter for the strided far-field pass
+        # frame counter per source for the far-field pass
         self._farfield_tick: Dict[str, int] = {}
-        # dedicated far-field model instances (see _farfield_model_for)
         self._farfield_models: Dict[str, Optional[YOLO]] = {}
-        # Inference runs in a worker thread (see the routers), so the model, the
-        # predictor's tracker slot and the motion history all need guarding.
-        # One GPU means serialising the work anyway; this just makes it explicit.
+        # requests run in worker threads, so the model and the histories need a lock
         self._lock = threading.Lock()
-        # One worker, reused: the CPU motion stage overlaps the GPU pass.
-        # Single-threaded on purpose -- MotionDetector is stateful per
-        # source and the lock already serialises frames for one feed.
+        # one worker, because MotionDetector keeps state per source
         self._pool = ThreadPoolExecutor(max_workers=1,
                                         thread_name_prefix='motion')
 
     def _load_one(self, path: str) -> YOLO:
-        """Load one checkpoint (preferring a matching TensorRT engine) and
-        warm it up. Shared by the default model and any view-specific ones so
-        they get identical treatment."""
+        """Load a checkpoint, using the matching TensorRT engine if there is one."""
         p = Path(path)
         engine_path = p.with_suffix(".engine")
         if config.USE_TENSORRT and config.DEVICE != "cpu" and engine_path.exists():
             try:
                 return self._load_and_warm(engine_path)
             except Exception as e:  # noqa: BLE001
-                # An engine is tied to the exact GPU, driver and TensorRT
-                # version it was built with, and the `tensorrt` package itself
-                # is absent from some environments here -- this repo has its
-                # See ENGINEERING_LOG.md for the measurements behind this.
+                # an engine only works on the GPU, driver and TensorRT it was built with
                 print(f"TensorRT engine at {engine_path} unusable ({e!r}); "
                       f"falling back to {p}")
         return self._load_and_warm(p)
 
     def _load_and_warm(self, load_path: Path) -> YOLO:
-        """Construct one model and burn the first-inference cost at startup.
-
-        The first inference triggers CUDA kernel compilation (or, for an
-        engine, execution-context setup for this input shape) and is 10-20x
-        slower than steady state. Pay it here, not on the first live frame.
-
-        The dummy is square while an engine may be rectangular (see
-        scripts/export_engine.py --imgsz). That is fine: ultralytics reads
-        imgsz from the engine metadata and letterboxes to it. Do NOT pass
-        imgsz= here -- overriding the metadata is exactly what makes a static
-        engine reject its input.
-        """
+        """Load one model and run a dummy frame, so the slow first inference
+        happens at startup and not on the first real frame."""
         print(f"Loading model from {load_path} on device {config.DEVICE}")
         model = YOLO(str(load_path))
+        # don't pass imgsz here, a static engine rejects anything but its own shape
         dummy = np.zeros((config.IMGSZ, config.IMGSZ, 3), dtype=np.uint8)
         model.predict(dummy, device=config.DEVICE, quantize=config.QUANTIZE, verbose=False)
         return model
 
     def load(self):
         p = Path(config.MODEL_PATH)
-        # A bare name like "yolo26s.pt" is a stock checkpoint ultralytics will
-        # fetch. Anything with a directory in it is meant to be a real file, and
-        # a missing one should say so plainly rather than fail deep inside YOLO().
+        # a bare name like "yolo26s.pt" is a stock checkpoint that ultralytics downloads
         if p.parent != Path(".") and not p.exists():
             raise FileNotFoundError(
                 f"Model not found at {p}. Train one with scripts/train.py and copy "
@@ -94,9 +68,7 @@ class Detector:
         self.model = self._load_one(config.MODEL_PATH)
         print("Model loaded and warmed up.")
 
-        # Drone-view specialisation is optional: only load it if it's actually
-        # there, and never let its absence or a bad file take down serving --
-        # every view falls back to self.model in that case (see _model_for).
+        # the drone model is optional, without it every view uses self.model
         drone_path = Path(config.DRONE_MODEL_PATH)
         if drone_path.exists():
             try:
@@ -118,42 +90,32 @@ class Detector:
             self._farfield_models.clear()
 
     def _model_for(self, view: str) -> YOLO:
-        """Resolve a view name ("ground", "drone", ...) to the model that
-        serves it, falling back to the default model for any view without its
-        own checkpoint loaded -- including "ground" itself."""
+        """The model for a view, or the default one if that view has none."""
         return self._view_models.get(view, self.model)
 
     def _bind_tracker(self, model: YOLO, view: str, source_id: str):
-        """Give this feed its own tracker on this model.
-
-        Ultralytics hangs a single tracker off the predictor and reuses it for
-        every track() call, so without this two feeds would share one ID space
-        and contaminate each other's track_ids.
-        """
+        """Give this feed its own tracker. Ultralytics keeps one tracker on the
+        predictor, so without this two feeds would share track IDs."""
         pred = getattr(model, "predictor", None)
         if pred is None or not hasattr(pred, "trackers"):
-            return  # first ever call: ultralytics builds one, we adopt it below
+            return  # first call, ultralytics builds one and we pick it up after
         key = (view, source_id)
         if key in self._trackers:
             pred.trackers = self._trackers[key]
         else:
             from ultralytics.trackers.track import on_predict_start
-            on_predict_start(pred, persist=False)  # build a fresh tracker list
+            on_predict_start(pred, persist=False)
             self._trackers[key] = pred.trackers
 
     def _adopt_tracker(self, model: YOLO, view: str, source_id: str):
-        """Record whatever tracker the predictor ended up holding for this feed."""
+        """Save whatever tracker the predictor ended up with for this feed."""
         pred = getattr(model, "predictor", None)
         if pred is not None and hasattr(pred, "trackers"):
             self._trackers[(view, source_id)] = pred.trackers
 
     def _track_history(self, source_id: str, track_id: int) -> deque:
-        """Centroid history for one track, as an LRU.
-
-        Track IDs only ever increase over the life of a feed, so an unbounded
-        dict here would grow for as long as the drone stays connected. Evicting
-        the least recently seen track keeps a long-running feed flat in memory.
-        """
+        """Centroid history for one track. Track IDs only go up, so the oldest
+        ones are dropped to keep a long feed from growing forever."""
         feed = self._history.setdefault(source_id, OrderedDict())
         hist = feed.get(track_id)
         if hist is None:
@@ -165,8 +127,7 @@ class Detector:
         return hist
 
     def _is_moving(self, source_id: str, track_id: int, cx: float, cy: float) -> bool:
-        """A track is 'moving' if its centroid has drifted more than
-        MOTION_THRESHOLD across the retained history window."""
+        """Moving means the centroid drifted more than MOTION_THRESHOLD over the window."""
         hist = self._track_history(source_id, track_id)
         hist.append((cx, cy))
         if len(hist) < 3:
@@ -174,14 +135,12 @@ class Detector:
         x0, y0 = hist[0]
         x1, y1 = hist[-1]
         displacement = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
-        # bool(): the comparison yields numpy.bool_, which json.dumps rejects
-        # on the WebSocket path (Pydantic would coerce it, raw json.dumps will not).
+        # bool() because numpy.bool_ breaks json.dumps on the WebSocket path
         return bool(displacement > config.MOTION_THRESHOLD)
 
     @staticmethod
     def _class_name(result, class_id: int) -> str:
-        """Prefer the checkpoint's own label map so the API stays honest when
-        it is pointed at a stock COCO model instead of a fine-tuned one."""
+        """Use the checkpoint's own label map, so a stock COCO model reports honestly."""
         names = getattr(result, "names", None) or {}
         if class_id in names:
             return str(names[class_id])
@@ -191,9 +150,7 @@ class Detector:
 
     @staticmethod
     def _conf_threshold_for(view: str, class_name: str) -> float:
-        """Per-class/per-view confidence floor. personnel carries its own floor
-        in BOTH views (CONF_THRESHOLD_PERSONNEL_GROUND / _DRONE in
-        app/config.py); everything else uses the global CONF_THRESHOLD."""
+        """Confidence floor for a class. Personnel has its own in each view."""
         if class_name == "personnel":
             if view == "ground":
                 return config.CONF_THRESHOLD_PERSONNEL_GROUND
@@ -202,10 +159,8 @@ class Detector:
 
     @classmethod
     def _model_conf_floor(cls, view: str) -> float:
-        """Lowest conf needed across all classes for this view, passed to
-        model.predict()/track() itself so ultralytics doesn't strip a box
-        before _to_detections gets a chance to apply the real per-class/view
-        threshold via _conf_threshold_for."""
+        """Lowest floor of any class in this view. The model gets this one, so it
+        doesn't drop a box that _conf_threshold_for would still keep."""
         floor = config.CONF_THRESHOLD
         if view == "ground":
             floor = min(floor, config.CONF_THRESHOLD_PERSONNEL_GROUND)
@@ -229,11 +184,7 @@ class Detector:
             cid = int(clss[i])
             cname = self._class_name(result, cid)
             conf = float(confs[i])
-            # The model call itself only enforces the LOWEST threshold any
-            # class/view needs (_model_conf_floor) so a lower personnel floor
-            # doesn't get stripped before it reaches here; apply the real,
-            # per-class/view floor now so the other classes aren't loosened
-            # by accident.
+            # the model only applied the lowest floor, so apply the real one here
             if conf < self._conf_threshold_for(view, cname):
                 continue
 
@@ -258,7 +209,7 @@ class Detector:
         return out
 
     def detect(self, frame: np.ndarray, source_id: str = "single", view: str = "ground") -> dict:
-        """Stateless single-image detection. No track IDs."""
+        """Detect on one image. No track IDs."""
         with self._lock:
             if self.model is None:
                 raise RuntimeError("Model not loaded")
@@ -278,8 +229,7 @@ class Detector:
             h, w = r.orig_shape
             detections = self._to_detections(r, source_id, tracking=False, view=view)
             if config.FARFIELD_ENABLED:
-                # Stateless path has no frame counter to stride on, so it always
-                # pays for the second pass -- callers here are single images.
+                # no frame counter here, so it always runs the second pass
                 detections = self._far_field_pass(frame, detections, view, w, h)
             elapsed = (time.perf_counter() - t0) * 1000
             return {
@@ -291,18 +241,14 @@ class Detector:
             }
 
     def _farfield_model_for(self, view: str) -> Optional[YOLO]:
-        """A SECOND model instance, used only by the far-field pass.
-
-        Loaded lazily and only when the feature is switched on, because it
-        costs another engine's worth of GPU memory (~256 MB) on a card that is
-        already tight. Returns None if it cannot be loaded -- the far-field
-        pass is an enhancement and must never take serving down with it.
-        """
+        """A second model instance just for the far-field pass. It is loaded
+        late because it costs about 256 MB of GPU memory, and returns None if
+        it can't load, since the far-field pass is optional."""
         cached = self._farfield_models.get(view)
         if cached is not None:
             return cached
         if view in self._farfield_models:
-            return None                       # previously failed; don't retry
+            return None                       # failed before, don't retry
         path = config.DRONE_MODEL_PATH if view == "drone" else config.MODEL_PATH
         if view == "drone" and not Path(path).exists():
             path = config.MODEL_PATH
@@ -317,18 +263,9 @@ class Detector:
 
     @staticmethod
     def _far_field_region(detections: List[dict], w: int, h: int):
-        """Where to spend a second inference pass: wherever the SMALL boxes are.
-
-        Recall collapses with target size (see FARFIELD_ENABLED in config for
-        the measured curve), so the far field is the only part of the frame
-        worth re-examining at higher effective resolution. Rather than assume
-        where it is, read it off the cheap full-frame pass that just ran: the
-        smallest boxes ARE the distant ones. Falls back to a horizon prior when
-        the frame gives nothing to estimate from.
-
-        Returns (x1, y1, x2, y2) in pixels, or None if the region would be so
-        large that the second pass buys nothing over the first.
-        """
+        """Pick the part of the frame for a second pass: where the small boxes
+        are, since small boxes are the far ones. Falls back to a horizon band.
+        Returns (x1, y1, x2, y2) in pixels, or None if it's not worth it."""
         boxes = [d for d in detections if d.get("class_id", -1) >= 0]
         region = None
         if len(boxes) >= config.FARFIELD_MIN_BOXES:
@@ -350,17 +287,17 @@ class Detector:
             px1, py1, px2, py2 = config.FARFIELD_PRIOR
             region = (px1 * w, py1 * h, px2 * w, py2 * h)
 
-        x1 = max(0, int(region[0])); y1 = max(0, int(region[1]))  # noqa: E702 - paired coordinates read better aligned
+        x1 = max(0, int(region[0])); y1 = max(0, int(region[1]))  # noqa: E702
         x2 = min(w, int(region[2])); y2 = min(h, int(region[3]))  # noqa: E702
         if x2 - x1 < 32 or y2 - y1 < 32:
             return None
         if ((x2 - x1) * (y2 - y1)) / float(max(1, w * h)) > config.FARFIELD_MAX_FRACTION:
-            return None                      # basically the whole frame again
+            return None                      # that's the whole frame again
         return (x1, y1, x2, y2)
 
     def _far_field_pass(self, frame: np.ndarray, detections: List[dict],
                         view: str, w: int, h: int) -> List[dict]:
-        """Re-run detection on the far field and merge in what only it found."""
+        """Run the detector again on the far field and add what it finds."""
         region = self._far_field_region(detections, w, h)
         if region is None:
             return detections
@@ -368,14 +305,9 @@ class Detector:
         tile = frame[y1:y2, x1:x2]
         if tile.size == 0:
             return detections
-        # MUST NOT be the serving model. A predict() call interleaved with the
-        # track() calls on the same YOLO object wrecks that object's predictor
-        # state, and the damage is to the FULL-FRAME pass, not to this one.
-        # Bisected by running this pass with every tile box discarded, so only
-        # the predict() call remained: v5.mp4 personnel fell 1560 -> 562. Saving
-        # and restoring predictor.trackers around the call was NOT enough
-        # (measured: no change at all), so the interference is broader than the
-        # tracker list. A dedicated instance is the only clean answer.
+        # this has to be its own model. Calling predict() on the serving model
+        # between track() calls broke its tracker state and cost about 60% of
+        # detections (see the log, section 19)
         model = self._farfield_model_for(view)
         if model is None:
             return detections
@@ -388,15 +320,13 @@ class Detector:
         tw, th = x2 - x1, y2 - y1
         added = []
         for d in extra:
-            # tile-normalised -> full-frame-normalised
+            # tile coordinates back to full frame
             fx1 = (x1 + d["x1"] * tw) / w
             fy1 = (y1 + d["y1"] * th) / h
             fx2 = (x1 + d["x2"] * tw) / w
             fy2 = (y1 + d["y2"] * th) / h
             side = (((fx2 - fx1) * w) * ((fy2 - fy1) * h)) ** 0.5
-            # The tile exists to find SMALL targets. A large box in it is a
-            # duplicate of one the full frame already has, and keeping those is
-            # what craters precision (0.644 -> 0.601 measured).
+            # a big box here is a copy of one the full frame already found
             if side > config.FARFIELD_MAX_BOX:
                 continue
             box = (fx1, fy1, fx2, fy2)
@@ -410,17 +340,10 @@ class Detector:
 
     def _claim_motion_blobs(self, detections: List[dict], blobs: List[dict],
                              w: int, h: int, assign_ids: bool = False) -> List[dict]:
-        """Anything moving that no classified detection overlaps becomes a
-        generic 'moving_object' detection (class_id -1). This is how a UAV --
-        or anything else outside the 4 trained classes -- still gets tagged:
-        the classifier didn't recognize it, but the motion pass saw it move
-        coherently, which is all this system is meant to require.
-
-        With assign_ids the blob also lends its track id to the detection that
-        claimed it. The gated path needs that: it runs predict() on crops, not
-        track() on frames, so the motion tracker is the only thing carrying
-        identity across frames there.
-        """
+        """Anything moving that no detection overlaps becomes a 'moving_object'
+        (class_id -1). That is how a UAV, or anything outside the four classes,
+        still gets reported. With assign_ids the blob also gives its track id to
+        the detection that claimed it."""
         extra = []
         for blob in blobs:
             blob_box = (blob["x1"], blob["y1"], blob["x2"], blob["y2"])
@@ -428,10 +351,8 @@ class Detector:
             claimer, best_score = None, config.MOTION_CLAIM_IOU
             for d in detections:
                 det_box = (d["x1"] * w, d["y1"] * h, d["x2"] * w, d["y2"] * h)
-                # Containment (intersection / blob area), NOT IoU. A walking
-                # person's swinging leg or bag is a small blob sitting entirely
-                # inside a large personnel box; its IoU with that box is
-                # See ENGINEERING_LOG.md for the measurements behind this.
+                # containment and not just IoU, because a swinging arm is a small
+                # blob inside a big person box and has a tiny IoU with it
                 ix = max(0.0, min(blob_box[2], det_box[2]) - max(blob_box[0], det_box[0]))
                 iy = max(0.0, min(blob_box[3], det_box[3]) - max(blob_box[1], det_box[1]))
                 overlap = max(ix * iy / blob_area, iou_xyxy(blob_box, det_box))
@@ -457,14 +378,7 @@ class Detector:
 
     def _detect_on_crops(self, frame: np.ndarray, crop_boxes: List[tuple],
                           w: int, h: int, model: YOLO, view: str = "ground") -> List[dict]:
-        """Run the detector on crop_boxes only, as ONE batch, and map the boxes
-        back into full-frame normalised coords.
-
-        MOTION_CROP_IMGSZ rather than IMGSZ: these are already small regions,
-        so letterboxing them up to 640 spends latency on padding. The batch is
-        bounded by MOTION_MAX_CROPS_PER_FRAME, so it cannot outgrow the VRAM
-        the full-frame path would have used anyway.
-        """
+        """Detect on the crops as one batch and map the boxes back to the frame."""
         usable = [(b, frame[b[1]:b[3], b[0]:b[2]]) for b in crop_boxes]
         usable = [(b, c) for b, c in usable if c.size > 0]
         if not usable:
@@ -502,19 +416,14 @@ class Detector:
                     "x1": float((x1 + ox) / w), "y1": float((y1 + oy) / h),
                     "x2": float((x2 + ox) / w), "y2": float((y2 + oy) / h),
                     "track_id": None,
-                    # _claim_motion_blobs flips this for whatever a coherent
-                    # blob claims. Anything else found in the crop is a static
-                    # object that happened to sit beside something that moved.
+                    # _claim_motion_blobs sets this to True for what a blob claims
                     "moving": False,
                 })
         return out
 
     @staticmethod
     def _dedupe(detections: List[dict], iou_threshold: float) -> List[dict]:
-        """Cross-crop NMS. Merged crops can still abut, and an object lying on
-        the seam gets found once in each -- ordinary per-image NMS never sees
-        that, because it happens between two separate inferences. IoU is
-        invariant to scaling, so comparing normalised boxes is correct here."""
+        """NMS across crops, for an object that sits on the edge of two."""
         kept: List[dict] = []
         for d in sorted(detections, key=lambda d: d["confidence"], reverse=True):
             box = (d["x1"], d["y1"], d["x2"], d["y2"])
@@ -528,11 +437,9 @@ class Detector:
     def _gated_detections(self, frame: np.ndarray, blobs: List[dict],
                            source_id: str, w: int, h: int, model: YOLO,
                            view: str = "ground") -> List[dict]:
-        """Stage 3: the classifier runs only on what stages 1-2 let through."""
+        """Stage 3: only classify what the motion stages let through."""
         if not blobs:
-            # Nothing moved coherently, so there is nothing worth classifying
-            # and the GPU is never touched at all. This is where the latency
-            # goes: a quiet feed costs background subtraction and nothing more.
+            # nothing moved, so the GPU isn't used at all
             return []
 
         crop_boxes = merge_boxes(
@@ -543,10 +450,7 @@ class Detector:
         )
 
         if len(crop_boxes) > config.MOTION_MAX_CROPS_PER_FRAME:
-            # Too much of the frame is moving (panning camera, a crowd) for
-            # crops to be the cheap option -- one full-frame pass covers all of
-            # it for less. Bounding this is what stops the gate from ever being
-            # SLOWER than the path it replaced.
+            # too much is moving, one full pass is cheaper than all the crops
             results = model.predict(
                 frame, imgsz=config.IMGSZ, conf=self._model_conf_floor(view),
                 iou=config.IOU_THRESHOLD, max_det=config.MAX_DET,
@@ -558,9 +462,7 @@ class Detector:
                             config.IOU_THRESHOLD)
 
     def _filter_excluded(self, frame: np.ndarray, detections: List[dict], w: int, h: int) -> List[dict]:
-        """Drop any detection whose crop visually matches an uploaded
-        reference image (app/exclusion.py), regardless of what it was
-        otherwise classified -- or not classified -- as."""
+        """Drop detections that look like an uploaded reference image."""
         if not detections:
             return detections
         crops = []
@@ -570,18 +472,14 @@ class Detector:
             x2 = max(x1, int(d["x2"] * w))
             y2 = max(y1, int(d["y2"] * h))
             crops.append(frame[y1:y2, x1:x2])
-        # One batched forward pass for the whole frame's crops instead of one
-        # per detection, which is what actually cost anything in this stage.
+        # one batched pass for all the crops
         flags = exclusion_store.are_excluded(crops)
         return [d for d, excluded in zip(detections, flags, strict=True) if not excluded]
 
     def _full_frame_track(self, frame: np.ndarray, source_id: str, view: str, model: YOLO) -> List[dict]:
-        """Ungated path: ultralytics tracking over the whole frame, every
-        frame. Kept as the fallback behind MOTION_GATED because it is the one
-        that gives real ByteTrack IDs and sees static targets the motion pass
-        by definition never reports."""
-        # bind -> infer -> adopt must be atomic: another feed swapping the
-        # predictor's tracker mid-inference would mix the two ID spaces.
+        """Track over the whole frame every frame. This is the normal path, and
+        the only one that sees targets that aren't moving."""
+        # bind, infer and adopt have to happen together, or two feeds mix their IDs
         self._bind_tracker(model, view, source_id)
         results = model.track(
             frame,
@@ -599,17 +497,11 @@ class Detector:
         return self._to_detections(results[0], source_id, tracking=True, view=view)
 
     def track(self, frame: np.ndarray, source_id: str, view: str = "ground") -> dict:
-        """Stateful frame-in-a-stream detection, as a four-stage cascade.
+        """Detect on a frame from a stream, keeping state between frames.
 
-        `view` selects which loaded checkpoint classifies this frame --
-        "ground" (default) or "drone", see config.DRONE_MODEL_PATH -- and is
-        otherwise orthogonal to the cascade below: the motion pass and track
-        history are unaffected by which classifier is running.
-
-        Returns track IDs and a moving/static flag per classified target, plus
-        class-agnostic 'moving_object' detections for anything moving that the
-        trained classes don't recognize, with reference-image exclusions
-        applied to the final result.
+        Returns track IDs and a moving flag for each target, plus
+        'moving_object' entries for anything moving that the four classes
+        don't cover, with reference-image exclusions applied at the end.
         """
         with self._lock:
             if self.model is None:
@@ -618,10 +510,8 @@ class Detector:
             t0 = time.perf_counter()
             h, w = frame.shape[:2]
 
-            # Stage 1+2 (app/motion_filter.py): background subtraction, then
-            # size/aspect/trajectory-coherence gates. Cheap, CPU, downscaled --
-            # incoherent jitter (wind-blown foliage) dies here and never costs
-            # See ENGINEERING_LOG.md for the measurements behind this.
+            # stages 1 and 2 (motion_filter.py): background subtraction, then the
+            # size, shape and trajectory checks. Foliage jitter dies here.
             blobs_future = None
             if config.MOTION_PARALLEL and not config.MOTION_GATED:
                 blobs_future = self._pool.submit(
@@ -631,33 +521,24 @@ class Detector:
                 blobs = motion_detector.detect(frame, source_id, view)
 
             if config.MOTION_GATED and not motion_detector.ego_reliable(source_id):
-                # Parallax beat the ego compensation, so the motion pass has
-                # nothing trustworthy to gate on. An empty blob list would make
-                # the gated path skip the GPU entirely and report nothing, i.e.
-                # go blind exactly when the camera is moving. Classify the whole
-                # frame instead and emit no class-agnostic motion contacts.
+                # camera motion couldn't be cancelled, so there are no usable
+                # blobs. Classify the whole frame so it doesn't go blind.
                 detections = self._full_frame_track(frame, source_id, view, model)
             elif config.MOTION_GATED:
-                # Stage 3: classify only the survivors. On a quiet frame this
-                # is zero GPU work; on a normal one it is a few small crops
-                # instead of a full 640x640 pass.
+                # stage 3: classify only what moved
                 detections = self._gated_detections(frame, blobs, source_id, w, h, model, view)
-                # Blobs the classifier could not name are still reported, and
-                # the blob's own track id becomes the detection's -- nothing
-                # else is tracking identity on this path.
+                # the blob's track id becomes the detection's here, because
+                # nothing else tracks on this path
                 detections = self._claim_motion_blobs(detections, blobs, w, h,
                                                        assign_ids=True)
             else:
                 detections = self._full_frame_track(frame, source_id, view, model)
                 if blobs_future is not None:
-                    # GPU pass is done; collect the CPU stage that ran beside it.
+                    # the GPU pass is done, collect the motion stage that ran beside it
                     blobs = blobs_future.result()
                     blobs_future = None
-                # Far field BEFORE motion blobs are claimed: a distant target
-                # the second pass names is a classified contact, and claiming
-                # should see it so it doesn't also emit a `moving_object` on
-                # top of the same thing. Strided -- the far field is scene
-                # geometry, it does not move frame to frame.
+                # far field goes before the blobs are claimed, so a distant
+                # target it names doesn't also come out as a moving_object
                 if config.FARFIELD_ENABLED and config.FARFIELD_STRIDE > 0:
                     n = self._farfield_tick.get(source_id, 0)
                     self._farfield_tick[source_id] = n + 1
@@ -666,21 +547,17 @@ class Detector:
                 detections = self._claim_motion_blobs(detections, blobs, w, h)
 
             if blobs_future is not None:
-                # Defensive: a branch above that never collected it. Leaving a
-                # future dangling would desynchronise the next frame's motion
-                # state, which is stateful and order-dependent.
+                # always collect it, or the next frame's motion state falls out of order
                 blobs = blobs_future.result()
 
-            # Stage 4: static HUD/OSD overlay rejection (app/overlay_mask.py).
-            # Runs before the exclusion pass because it is the cheaper test and
-            # drops the bulk of the boxes on FPV/UAV footage -- 31 per frame of
-            # See ENGINEERING_LOG.md for the measurements behind this.
+            # stage 4: HUD overlay filter (overlay_mask.py), before the exclusion
+            # pass because it is cheaper and removes most of the boxes on FPV footage
             camera_moving = bool(
                 motion_detector.debug_info(source_id).get("moving_camera", False))
             overlay_mask.observe(frame, detections, source_id, camera_moving)
             detections = overlay_mask.filter(detections, source_id)
 
-            # Stage 5: reference-image exclusion on the final detection set.
+            # stage 5: reference-image exclusion
             detections = self._filter_excluded(frame, detections, w, h)
 
             elapsed = (time.perf_counter() - t0) * 1000
@@ -702,7 +579,7 @@ class Detector:
             overlay_mask.reset(source_id)
 
     def stats(self) -> dict:
-        """Per-feed tracker/history sizes, for /health."""
+        """How many tracks each feed is holding, for /health."""
         with self._lock:
             return {sid: len(h) for sid, h in self._history.items()}
 

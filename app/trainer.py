@@ -13,12 +13,10 @@ from typing import Dict
 
 from app import config
 
-# Ultralytics prefixes progress rows with ANSI escapes (ESC[K, colours), so
-# they must be stripped before the epoch row will match at ^.
+# ultralytics puts ANSI escapes in front of its progress rows
 ANSI_RE = re.compile(chr(27) + r"\[[0-9;?]*[a-zA-Z]")
 EPOCH_RE = re.compile(r"^\s*(\d+)/(\d+)\s")
-# Ultralytics increments a reused run name to "<name>2", so the real output
-# directory is scraped from its own args dump rather than assumed.
+# a reused run name gets a number added, so read the real directory from the log
 SAVE_DIR_RE = re.compile(r"save_dir=([^,]+)")
 
 
@@ -30,12 +28,8 @@ class TrainingManager:
 
     @staticmethod
     def _kill_tree(proc: subprocess.Popen):
-        """Kill the training process and its children.
-
-        terminate() signals only the launcher. Ultralytics spawns dataloader
-        worker processes, which on Windows would be left running and holding
-        VRAM after a cancel.
-        """
+        """Kill the training process and its children. On Windows terminate() leaves the
+        dataloader workers running and holding VRAM."""
         if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -45,8 +39,7 @@ class TrainingManager:
             proc.terminate()
 
     def _reader(self, job_id: str, proc: subprocess.Popen, log_path):
-        """Runs in a background thread: drains stdout, tails it, scrapes
-        the current epoch, and writes the full log to disk."""
+        """Background thread: reads stdout, keeps the tail, tracks the epoch and writes the log."""
         job = self.jobs[job_id]
         try:
             with open(log_path, "w", encoding="utf-8") as log_file:
@@ -64,9 +57,8 @@ class TrainingManager:
                         if d:
                             job["save_dir"] = d.group(1).strip()
         except Exception as e:  # noqa: BLE001
-            # This thread is the only thing draining the child's stdout. If it
-            # dies, the pipe fills and the child blocks forever, leaving the job
-            # wedged at "running". Kill the child rather than hang.
+            # this thread is the only reader of the child's stdout, so if it dies the child
+            # blocks forever. Kill it instead.
             job["log_tail"].append(f"[reader error] {e!r}")
             self._kill_tree(proc)
 
@@ -77,8 +69,7 @@ class TrainingManager:
                 pass
             elif proc.returncode == 0:
                 job["status"] = "completed"
-                # Trust the directory ultralytics reported; fall back to the
-                # conventional one only if the args dump was never seen.
+                # use the directory ultralytics reported
                 base = (Path(job["save_dir"]) if job["save_dir"]
                         else config.RUNS_DIR / job["run_name"])
                 best = base / "weights" / "best.pt"
@@ -87,9 +78,7 @@ class TrainingManager:
                 job["status"] = "failed"
 
     def start(self, req) -> dict:
-        # The whole check-then-spawn has to be atomic: two POSTs arriving
-        # together would both pass a bare is_training() check and put two
-        # trainings on one 8 GB GPU.
+        # check and spawn together, or two requests could both start a training
         with self._lock:
             if self._is_training():
                 raise RuntimeError("A training job is already running. "
@@ -99,8 +88,7 @@ class TrainingManager:
             config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
             log_path = config.LOGS_DIR / f"{job_id}.log"
 
-            # -u: without it the child block-buffers stdout into the pipe and the
-            # reader thread sees nothing until the run ends, so progress never updates.
+            # -u so output isn't buffered, or progress wouldn't update until the end
             cmd = [
                 sys.executable, "-u", str(config.TRAIN_SCRIPT),
                 "--model", req.model,
@@ -118,9 +106,7 @@ class TrainingManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                # Windows text pipes decode as cp1252, and ultralytics progress
-                # bars emit UTF-8 box-drawing bytes that cp1252 cannot map.
-                # Without this the reader thread dies on UnicodeDecodeError.
+                # windows pipes decode as cp1252, which can't read ultralytics' progress bars
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
@@ -149,8 +135,7 @@ class TrainingManager:
         return self.get(job_id)
 
     def _is_training(self) -> bool:
-        """A job counts as running only if its process is actually alive, so a
-        job whose bookkeeping got stuck cannot block the queue forever."""
+        """Running only if the process is alive, so stuck bookkeeping can't block the queue."""
         for jid, j in self.jobs.items():
             if j["status"] != "running":
                 continue

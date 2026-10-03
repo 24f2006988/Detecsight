@@ -1,12 +1,8 @@
-"""Reference-image exclusion: upload a picture of an object and detections
-that visually match it get dropped, without needing that object to be one
-of the trained classes and without any retraining.
+"""Reference-image exclusion. Upload a picture of something and detections that look
+like it are dropped, with no retraining.
 
-Uses a pretrained ImageNet backbone purely as a feature extractor (its
-classification head is discarded) to embed both the reference image and
-each detection crop, then compares them by cosine similarity. This is why
-it works with a single example image: it doesn't learn "headphone", it just
-measures "does this crop look like that reference photo".
+A pretrained ImageNet network (MobileNetV3, head removed) turns the reference and
+each detection crop into a vector, and they are compared by cosine similarity.
 """
 import json
 from pathlib import Path
@@ -22,9 +18,7 @@ from app import config
 
 class ExclusionStore:
     def __init__(self, path: Path = None, device: str = "cpu"):
-        # CPU by design: embeddings only run on a handful of surviving crops
-        # per frame, not the whole image, and this keeps GPU memory free for
-        # the detector, which is the thing that actually needs it.
+        # CPU on purpose: only a few crops per frame, and the GPU belongs to the detector
         self.path = path or config.EXCLUSION_STORE_PATH
         self.device = device
         self._model = None
@@ -43,9 +37,7 @@ class ExclusionStore:
         self._transform = weights.transforms()
 
     def _embed_batch(self, images_bgr: List[np.ndarray]) -> np.ndarray:
-        """One forward pass for all crops. Per-crop passes dominated this stage
-        on a busy frame -- the transform and the batch dimension are the cost,
-        not the network."""
+        """Embed all the crops in one forward pass. One pass per crop was too slow."""
         self._ensure_model()
         tensors = []
         for img in images_bgr:
@@ -90,9 +82,7 @@ class ExclusionStore:
 
     def is_excluded(self, crop_bgr: np.ndarray,
                      threshold: float = None) -> Tuple[bool, Optional[str], float]:
-        """Returns (excluded, matched_name, similarity). Cheap no-op when the
-        store is empty, so this costs nothing until someone actually uploads
-        a reference image."""
+        """Returns (excluded, matched_name, similarity). Does nothing if nothing was uploaded."""
         if not self._entries or crop_bgr is None or crop_bgr.size == 0:
             return False, None, 0.0
         threshold = config.EXCLUSION_SIMILARITY_THRESHOLD if threshold is None else threshold
@@ -106,16 +96,12 @@ class ExclusionStore:
 
     def are_excluded(self, crops: List[np.ndarray],
                       threshold: float = None) -> List[bool]:
-        """Batched is_excluded over several crops from one frame. Same no-op
-        shortcut when nothing has been uploaded, so this costs nothing until
-        someone actually adds a reference image."""
+        """is_excluded for all the crops of one frame."""
         if not self._entries or not crops:
             return [False] * len(crops)
         threshold = config.EXCLUSION_SIMILARITY_THRESHOLD if threshold is None else threshold
 
-        # An empty crop (a zero-area box after clipping) can't be embedded, but
-        # it also can't match anything -- keep it out of the batch and mark it
-        # not-excluded rather than failing the whole frame.
+        # an empty crop can't be embedded or match anything, so leave it out of the batch
         usable = [(i, c) for i, c in enumerate(crops) if c is not None and c.size > 0]
         out = [False] * len(crops)
         if not usable:

@@ -1,14 +1,8 @@
-"""Class-agnostic motion detection: background subtraction + trajectory
-coherence.
+"""Motion detection that does not need to know what the object is.
 
-The point is to tag "something moved" without needing to know what it is --
-so this works independently of the trained 4-class model. Raw background
-subtraction alone fires on anything that changed pixel-to-pixel, including
-wind-blown leaves and branches, so every blob is tracked for a few frames and
-scored on how STRAIGHT its path is: a person or UAV moves with a roughly
-consistent trajectory over a handful of frames, while foliage jitters back
-and forth in place. Low straightness gets filtered out before it ever reaches
-the classifier.
+Background subtraction finds what changed, then each blob is followed for a few
+frames and kept only if it moves in a fairly straight line. Foliage jitters in
+place, a person or a UAV does not.
 """
 from collections import deque
 from typing import Dict, List
@@ -36,10 +30,7 @@ def iou_xyxy(a: tuple, b: tuple) -> float:
 
 
 def merge_boxes(boxes: List[tuple], iou_threshold: float) -> List[tuple]:
-    """Union boxes that overlap more than iou_threshold, repeatedly, until none
-    do. Two motion blobs a few pixels apart would otherwise become two crops
-    covering mostly the same pixels, and the whole point of stage 3 is not
-    pushing the same pixels through the network twice."""
+    """Merge boxes that overlap more than iou_threshold, until none do."""
     merged = [list(b) for b in boxes]
     changed = True
     while changed:
@@ -60,13 +51,8 @@ def merge_boxes(boxes: List[tuple], iou_threshold: float) -> List[tuple]:
 
 def pad_box(box: tuple, frame_w: int, frame_h: int, padding: float,
             min_size: int) -> tuple:
-    """Grow a blob box outward into a crop box, clipped to the frame.
-
-    Background subtraction fires on the moving *part* of a target -- swinging
-    limbs, a rotor disc -- not its silhouette, so a crop tight to the blob can
-    cut the object in half and the detector sees a fragment. Padding gives it
-    the context back, and min_size stops a 10 px blob becoming a 10 px crop.
-    """
+    """Grow a blob box into a crop box, clipped to the frame. A blob is only the
+    moving part of a target, so a tight crop would cut it in half."""
     x1, y1, x2, y2 = box
     w, h = max(1.0, x2 - x1), max(1.0, y2 - y1)
     cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -89,41 +75,23 @@ class _Track:
 
 
 class MotionDetector:
-    """Per-source background subtraction + blob-trajectory coherence.
-
-    Each source_id gets its own background model and track list -- state
-    from one feed must never leak into another, same reasoning as the
-    per-feed trackers in Detector._bind_tracker.
-    """
+    """Background subtraction and trajectory checks, with separate state per source."""
 
     def __init__(self):
         self._bg: Dict[str, cv2.BackgroundSubtractorMOG2] = {}
         self._tracks: Dict[str, List[_Track]] = {}
         self._next_id: Dict[str, int] = {}
-        # Previous working-resolution grey frame, per source: the reference the
-        # camera's own motion is estimated against.
+        # previous grey frame per source, used to estimate the camera motion
         self._prev_gray: Dict[str, np.ndarray] = {}
-        # Whether the last frame's ego compensation was trustworthy. False when
-        # parallax defeated the single-global-transform assumption -- see
-        # EGO_MAX_RESIDUAL in app/config.py.
+        # whether the last frame's camera-motion cancelling can be trusted
         self._ego_reliable: Dict[str, bool] = {}
-        # Exponential moving average of the compensated foreground fraction,
-        # per source -- see EGO_RESIDUAL_EMA_ALPHA in app/config.py. Smooths
-        # out frame-to-frame noise (motion blur on a fast pan) that otherwise
-        # flickers the single-frame residual check above and below
-        # EGO_MAX_RESIDUAL every frame instead of settling on one side of it.
+        # smoothed foreground fraction, so the check does not flicker on and off
         self._ego_residual_ema: Dict[str, float] = {}
-        # Exponential moving average of the estimated camera shift, per
-        # source -- see EGO_SHIFT_EMA_ALPHA in app/config.py. Same problem as
-        # the residual EMA above, one step earlier: a slow, genuine pan whose
-        # See ENGINEERING_LOG.md for the measurements behind this.
+        # smoothed camera shift, same reason
         self._shift_ema: Dict[str, float] = {}
-        # Frames still to suppress after MOTION_CHRONIC_BLOB_COUNT last
-        # tripped, per source -- see MOTION_CHRONIC_COOLDOWN in app/config.py.
+        # frames still being suppressed after the chronic-blob check tripped
         self._chronic_cooldown: Dict[str, int] = {}
-        # Last frame's raw signals per source, for diagnosis only (scripts/
-        # diagnose_bursts.py) -- never read by detect() itself, so it cannot
-        # change behaviour, only make it inspectable after the fact.
+        # last frame's raw signals, for diagnosis only
         self._debug: Dict[str, dict] = {}
 
     def _subtractor(self, source_id: str):
@@ -145,13 +113,9 @@ class MotionDetector:
 
     @staticmethod
     def _estimate_ego(prev_gray: np.ndarray, gray: np.ndarray):
-        """Global frame-to-frame transform (2x3 affine, rotation+scale+shift),
-        or None if the scene gives too little to fit one confidently.
-
-        Tracked corners rather than dense flow: a few hundred points is enough
-        to pin down four parameters, and RANSAC lets the genuinely-moving
-        objects fall out as outliers instead of dragging the fit toward them.
-        """
+        """Global frame-to-frame transform (2x3 affine), or None if the scene has
+        too little to fit one. Tracked corners with RANSAC, so moving objects
+        show up as outliers and don't pull the fit."""
         pts = cv2.goodFeaturesToTrack(prev_gray, maxCorners=200, qualityLevel=0.01,
                                       minDistance=8, blockSize=7)
         if pts is None or len(pts) < config.EGO_MIN_FEATURES:
@@ -168,14 +132,9 @@ class MotionDetector:
 
     @staticmethod
     def _compensated_mask(prev_gray: np.ndarray, gray: np.ndarray, M) -> np.ndarray:
-        """Foreground mask with the camera's own motion cancelled out.
-
-        The previous frame is warped into the current frame's coordinates, so
-        static structure lands on itself and differences away to nothing. What
-        survives is motion the camera does not explain -- an actual moving
-        object. Border regions are dropped: the warp pulls in pixels the
-        previous frame never saw, and those differ from everything.
-        """
+        """Foreground mask with the camera's own motion cancelled. The previous frame
+        is warped onto this one, so what is left is motion the camera does not
+        explain. Borders are dropped, the warp pulls in pixels it never saw."""
         h, w = gray.shape[:2]
         warped = cv2.warpAffine(prev_gray, M, (w, h), flags=cv2.INTER_LINEAR,
                                 borderMode=cv2.BORDER_REPLICATE)
@@ -188,13 +147,8 @@ class MotionDetector:
 
     @staticmethod
     def _restabilise(tracks: List["_Track"], M) -> None:
-        """Move stored track history into the current frame's coordinates.
-
-        Histories are in frame coords, so under a pan every track's path picks
-        up the camera's motion on top of the object's own -- which is exactly
-        what _straightness would then score. Warping the history by the same
-        transform leaves the object's true trajectory behind.
-        """
+        """Move the stored track history into the current frame's coordinates, so a
+        pan doesn't count as the object's own movement."""
         a, b, tx = float(M[0][0]), float(M[0][1]), float(M[0][2])
         c, d, ty = float(M[1][0]), float(M[1][1]), float(M[1][2])
         for t in tracks:
@@ -219,17 +173,11 @@ class MotionDetector:
 
     @staticmethod
     def _structure_score(prev_aligned, gray, box) -> float:
-        """How much of the change under `box` is STRUCTURE rather than light.
+        """How much of the change under `box` is structure and not just light.
 
-        Returns a value in [0, 1]: high means the region genuinely changed
-        content (an object moved into or through it), low means only the
-        illumination level changed (muzzle flash, headlight, glare, a lamp).
-
-        1.0 is also returned whenever the test cannot judge -- no previous
-        frame, a degenerate box, or a patch too flat to carry structure. That
-        is deliberate: this gate can only ever REJECT, and the standing
-        judgement is that a suppressed real contact is the failure that
-        matters, so an unjudgeable blob is passed through.
+        Close to 1 means the content changed (something moved through). Close to 0
+        means only the brightness changed (a flash, a headlight). Returns 1.0 when
+        it can't judge, since a missed real contact is worse than a false one.
         """
         if prev_aligned is None or prev_aligned.shape != gray.shape:
             return 1.0
@@ -245,38 +193,29 @@ class MotionDetector:
         if sa < config.MOTION_STRUCTURE_MIN_STD or sb < config.MOTION_STRUCTURE_MIN_STD:
             return 1.0                       # featureless patch -- fail open
 
-        # Signature 1: a uniform brightness shift moves every pixel by roughly
-        # the same amount, so the difference image's mean dominates its spread.
+        # a uniform brightness shift moves every pixel by about the same amount
         d = b - a
         spread, level = float(d.std()), abs(float(d.mean()))
         if level > 1.0 and spread / level < config.MOTION_STRUCTURE_UNIFORM_RATIO:
             return 0.0
 
-        # Signature 2: brightness/contrast change preserves structure, so the
-        # z-scored patches still correlate. Real content change does not.
+        # a brightness or contrast change keeps the structure, so the patches still correlate
         ncc = float((((a - a.mean()) / sa) * ((b - b.mean()) / sb)).mean())
         return 1.0 - max(0.0, min(1.0, ncc))
 
     @staticmethod
     def _coherence_threshold(view: str) -> float:
-        """Drone and ground view want opposite things from this gate -- see
-        the comment on MOTION_COHERENCE_THRESHOLD_DRONE/_GROUND in
-        app/config.py. Any view without its own entry (there are currently
-        only two) falls back to the ground value, since that's the more
-        permissive of the two and matches this project's default view."""
+        """Drone and ground want different thresholds (see config). Any other view
+        gets the ground one, the more permissive of the two."""
         return {
             "drone": config.MOTION_COHERENCE_THRESHOLD_DRONE,
             "ground": config.MOTION_COHERENCE_THRESHOLD_GROUND,
         }.get(view, config.MOTION_COHERENCE_THRESHOLD_GROUND)
 
     def detect(self, frame: np.ndarray, source_id: str, view: str = "ground") -> List[dict]:
-        """Return coherently-moving blobs as [{x1,y1,x2,y2,coherence}], in the
-        ORIGINAL frame's pixel coords (internally this all runs on a
-        downscaled copy -- see MOTION_WORKING_WIDTH -- and scales back up).
-
-        `view` only affects the trajectory-coherence threshold below (see
-        _coherence_threshold) -- background subtraction, ego compensation and
-        every other gate in this method are view-independent."""
+        """Return the blobs that move coherently as [{x1,y1,x2,y2,coherence}] in the
+        original frame's pixels. Runs on a downscaled copy and scales back up.
+        `view` only changes the coherence threshold."""
         coherence_threshold = self._coherence_threshold(view)
         h0, w0 = frame.shape[:2]
         scale = config.MOTION_WORKING_WIDTH / w0 if w0 > config.MOTION_WORKING_WIDTH else 1.0
@@ -288,8 +227,7 @@ class MotionDetector:
         prev_gray = self._prev_gray.get(source_id)
         self._prev_gray[source_id] = gray
 
-        # MOG2 is fed every frame regardless of which mask is used, so its model
-        # stays current and the static path is ready the moment the camera settles.
+        # MOG2 gets every frame so it stays current
         fg = self._subtractor(source_id).apply(small)
         # MOG2 labels shadow pixels 127; keep only confident foreground (255).
         _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
@@ -299,10 +237,7 @@ class MotionDetector:
                 and prev_gray.shape == gray.shape):
             ego = self._estimate_ego(prev_gray, gray)
         shift = (float(ego[0][2]) ** 2 + float(ego[1][2]) ** 2) ** 0.5 if ego is not None else 0.0
-        # Smoothed before the branch decision, not read raw: a slow genuine
-        # pan whose per-frame shift hovers near EGO_STATIC_SHIFT (RANSAC
-        # noise in the affine fit, frame to frame) otherwise flickers which
-        # See ENGINEERING_LOG.md for the measurements behind this.
+        # smoothed before deciding, or a slow pan flickers between the two paths
         if ego is not None:
             prev_shift_ema = self._shift_ema.get(source_id, shift)
             shift_ema = (config.EGO_SHIFT_EMA_ALPHA * shift
@@ -315,10 +250,8 @@ class MotionDetector:
         moving_camera = ego is not None and shift_ema >= config.EGO_STATIC_SHIFT
         self._ego_reliable[source_id] = True
         degraded = False
-        # The structure test compares this frame against the previous one, so
-        # under a pan the previous frame has to be brought into this frame's
-        # coordinates first -- the same warp _compensated_mask uses, computed
-        # once per frame rather than once per blob.
+        # the structure test needs the previous frame in this frame's coordinates,
+        # so warp it once here and not once per blob
         prev_aligned = prev_gray
         if (config.MOTION_STRUCTURE_ENABLED and moving_camera
                 and prev_gray is not None and prev_gray.shape == gray.shape):
@@ -333,27 +266,17 @@ class MotionDetector:
             fg = self._compensated_mask(prev_gray, gray, ego)
             fg_fraction = float((fg > 0).mean())
             dbg["compensated_fg_fraction"] = fg_fraction
-            # Smoothed with an EMA, not read raw: on a fast handheld pan,
-            # motion blur keeps this fraction from settling clearly above or
-            # below EGO_MAX_RESIDUAL -- it hovers across the line frame to
-            # See ENGINEERING_LOG.md for the measurements behind this.
+            # smoothed, because blur on a fast pan keeps this hovering around the limit
             prev_ema = self._ego_residual_ema.get(source_id, fg_fraction)
             ema = (config.EGO_RESIDUAL_EMA_ALPHA * fg_fraction
                    + (1.0 - config.EGO_RESIDUAL_EMA_ALPHA) * prev_ema)
             self._ego_residual_ema[source_id] = ema
             dbg["compensated_fg_fraction_ema"] = ema
-            # If this much of the frame still reads as foreground after
-            # cancelling the camera's own motion, one global transform did not
-            # describe the scene (parallax), and every blob below would be
-            # static structure smeared by the pan. Report nothing rather than
-            # a frame full of phantom contacts; Detector.track sees the flag
-            # and falls back to classifying the whole frame.
+            # still a lot of foreground after cancelling camera motion means one transform
+            # doesn't fit the scene (parallax). Detector.track then classifies the whole frame
             if ema > config.EGO_MAX_RESIDUAL:
                 self._ego_reliable[source_id] = False
-                # Measured 2026-09-02: dropping here unconditionally was
-                # disabling the motion channel for 224 of 225 frames on v2 and
-                # v9, and 535 of 1068 on v6 -- i.e. almost always, on exactly
-                # See ENGINEERING_LOG.md for the measurements behind this.
+                # only drop everything past twice the limit, in between run with stricter gates
                 if ema > config.EGO_MAX_RESIDUAL * config.EGO_RESIDUAL_DEGRADED_FACTOR:
                     self._tracks[source_id] = []
                     dbg["dropped_reason"] = "ego_residual"
@@ -362,19 +285,11 @@ class MotionDetector:
                 degraded = True
                 dbg["degraded_reason"] = "ego_residual"
         else:
-            # Camera just stopped panning: drop the stale EMA rather than let
-            # it anchor to a moving-camera noise level, so a genuine return to
-            # a moving pan starts judging fresh instead of inheriting bias
-            # from before the stop.
+            # the camera stopped, so forget the old moving-camera noise level
             self._ego_residual_ema.pop(source_id, None)
             if fg_fraction > config.MOTION_MOG2_MAX_FRACTION:
-                # MOG2's counterpart to the residual check above: a background
-                # model that hasn't settled (wind-blown foliage, a lighting
-                # flicker) reads as a large, chronically "foreground" region
-                # that fragments into many small blobs -- exactly what a real
-                # target burst would look like to the coherence gate below,
-                # just for the wrong reason. Report nothing this frame rather
-                # than a swarm.
+                # MOG2's version of that check. A background that hasn't settled (foliage,
+                # flicker) is mostly foreground and breaks into many blobs, so report nothing
                 self._ego_reliable[source_id] = False
                 self._tracks[source_id] = []
                 dbg["dropped_reason"] = "mog2_fraction"
@@ -391,9 +306,7 @@ class MotionDetector:
             if area < config.MOTION_MIN_BLOB_AREA:
                 continue
             x, y, w, h = cv2.boundingRect(c)
-            # Shape gate: a swaying branch or a moving shadow edge projects to a
-            # sliver or a flat band, nothing a person/vehicle/UAV can look like.
-            # Costs one division and drops that noise before it ever gets a track.
+            # shape check: a branch or a shadow edge is a sliver or a flat band
             if h <= 0:
                 continue
             ratio = w / float(h)
@@ -401,10 +314,8 @@ class MotionDetector:
                 continue
             sized.append((area, x, y, x + w, y + h, (x + w / 2.0, y + h / 2.0)))
 
-        # Chronic fine texture (brick paving, gravel, compression grain) can
-        # fragment into dozens of small blobs while the raw foreground
-        # FRACTION checked above stays comfortably under its threshold -- each
-        # See ENGINEERING_LOG.md for the measurements behind this.
+        # fine texture (paving, gravel) can break into dozens of blobs while the
+        # foreground fraction stays under its limit
         cooldown = self._chronic_cooldown.get(source_id, 0)
         chronic = len(sized) > config.MOTION_CHRONIC_BLOB_COUNT
         if chronic:
@@ -423,10 +334,7 @@ class MotionDetector:
             self._debug[source_id] = dbg
             return []
 
-        # A busy frame (e.g. camera panning, which reads as near-whole-frame
-        # change to plain background subtraction) can produce far more
-        # contours than any real scene has moving objects. Bound it here so
-        # per-frame cost can't grow with scene busyness -- see config comment.
+        # cap the blob count so a busy frame can't make this slow
         sized.sort(key=lambda s: s[0], reverse=True)
         blobs = [(x1, y1, x2, y2, c) for _, x1, y1, x2, y2, c in sized[:config.MOTION_MAX_BLOBS_PER_FRAME]]
         dbg["raw_contour_count"] = len(contours)
@@ -467,18 +375,14 @@ class MotionDetector:
             if n_pts < config.MOTION_COHERENCE_MIN_POINTS and not fast_ok:
                 continue
 
-            # Cheap gates first: only pay for the patch comparison on a blob
-            # that is otherwise about to be reported.
+            # cheap checks first, the patch comparison only runs on blobs about to be reported
             structure = 1.0
             if config.MOTION_STRUCTURE_ENABLED:
                 structure = self._structure_score(prev_aligned, gray, (x1, y1, x2, y2))
 
             if fast_ok:
-                # The brief-appearance path. Two points make _straightness
-                # degenerate (any two points are collinear), so it is NOT the
-                # evidence here: real displacement plus a real content change
-                # is. That is what makes a half-second appearance reportable
-                # at all -- it can never accumulate MOTION_COHERENCE_MIN_POINTS.
+                # brief appearance path: two points are always in a line, so straightness
+                # means nothing here. Use real movement plus a real content change instead.
                 if structure < config.MOTION_STRUCTURE_MIN_FAST:
                     continue
                 p0, p1 = best.history[0], best.history[-1]
@@ -489,8 +393,7 @@ class MotionDetector:
             else:
                 threshold = coherence_threshold
                 if degraded:
-                    # Paying for the missing ego reliability with a stricter
-                    # bar on both axes rather than reporting nothing at all.
+                    # stricter on both checks when camera motion isn't fully trusted
                     threshold = max(threshold, config.MOTION_COHERENCE_DEGRADED_MIN)
                     if structure < config.MOTION_STRUCTURE_MIN_FAST:
                         continue
@@ -514,8 +417,7 @@ class MotionDetector:
                 t.age += 1
         tracks = [t for t in tracks if t.age <= config.MOTION_TRACK_MAX_AGE]
         if len(tracks) > config.MOTION_MAX_TRACKS_PER_SOURCE:
-            # Keep the most recently matched (lowest age) tracks; a busy scene
-            # sheds its stalest/noisiest tracks first rather than growing forever.
+            # keep the most recently matched tracks
             tracks.sort(key=lambda t: t.age)
             tracks = tracks[:config.MOTION_MAX_TRACKS_PER_SOURCE]
         self._tracks[source_id] = tracks
@@ -526,8 +428,7 @@ class MotionDetector:
         return results
 
     def debug_info(self, source_id: str) -> dict:
-        """Last frame's raw motion-pass signals for this source -- diagnosis
-        only, see the note on self._debug above."""
+        """Last frame's raw motion signals for this source, for diagnosis only."""
         return self._debug.get(source_id, {})
 
 

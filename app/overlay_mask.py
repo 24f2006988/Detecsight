@@ -1,6 +1,7 @@
-"""Static HUD/OSD overlay rejection.
+"""Removes detections that sit on a HUD or on-screen text burned into the video.
 
-See ENGINEERING_LOG.md for the measurements behind this.
+A painted glyph stays in the same spot while the camera moves, so a cell that keeps
+producing small detections while the camera is panning is an overlay. It fails open.
 """
 from typing import Dict, List, Optional
 
@@ -16,16 +17,12 @@ class _SourceState:
                  "big_n", "big_wm", "big_wm2", "big_hm", "big_hm2", "big_mask")
 
     def __init__(self, grid: int):
-        # Decayed count of frames in which each cell held a small detection,
-        # and the decayed count of qualifying (camera-moving) frames to divide
-        # it by.
+        # decayed count of frames where each cell held a small detection, and of camera-moving frames
         self.hits = np.zeros((grid, grid), np.float32)
         self.frames = 0.0
         self.mask: Optional[np.ndarray] = None
         self.masked_fraction = 0.0
-        # Large-box channel: per-cell Welford accumulators for box width and
-        # height. Not decayed -- these describe a cell's geometry, not how
-        # recently it fired, and the hit count alone carries recency.
+        # big-box channel: running width and height stats per cell
         self.big_n = np.zeros((grid, grid), np.float32)
         self.big_wm = np.zeros((grid, grid), np.float32)
         self.big_wm2 = np.zeros((grid, grid), np.float32)
@@ -35,12 +32,7 @@ class _SourceState:
 
 
 class OverlayMask:
-    """Per-source static-overlay detection and rejection.
-
-    State is per source_id and never shared between feeds -- two cameras have
-    different HUDs, same reasoning as the per-feed background models in
-    app/motion_filter.py.
-    """
+    """Overlay detection and rejection, with separate state for each source."""
 
     def __init__(self):
         self._state: Dict[str, _SourceState] = {}
@@ -57,17 +49,11 @@ class OverlayMask:
 
     def observe(self, frame: np.ndarray, detections: List[dict], source_id: str,
                 camera_moving: bool) -> None:
-        """Fold one frame's evidence in. Call before filter().
-
-        `camera_moving` comes from the motion pass's own ego-motion estimate
-        (app/motion_filter.py), so this reuses a signal the pipeline already
-        computes rather than estimating camera motion a second time.
-        """
+        """Add one frame's evidence. Call before filter(). camera_moving comes from the
+        motion filter's own estimate, so camera motion is only worked out once."""
         if not config.OVERLAY_FILTER:
             return
-        # Persistence only counts while the world is actually sliding past. On
-        # a still camera a real parked vehicle is indistinguishable from a
-        # painted glyph by this test, so those frames are not evidence at all.
+        # only counts while the camera moves, a parked vehicle looks like a glyph on a still one
         if not camera_moving:
             return
 
@@ -84,8 +70,7 @@ class OverlayMask:
                         and d.get("class_id", 0) not in config.OVERLAY_LARGE_EXEMPT):
                     self._observe_large(st, d, grid)
                 continue
-            # Centre cell only, not the whole box: a box's extent is noisy at
-            # 9 px, and it is where the thing sits that identifies it.
+            # centre cell only, a box's edges are noisy at this size
             gy, gx = self._cell(d, grid)
             touched[gy, gx] = True
         st.hits += touched
@@ -101,10 +86,8 @@ class OverlayMask:
 
     @staticmethod
     def _is_glyph_sized(d: dict) -> bool:
-        """Small enough to plausibly be a HUD element. Boxes above this are
-        neither learned from nor ever suppressed -- see condition 2 in the
-        module docstring. Coordinates are normalised, so this is a fraction of
-        the frame's area."""
+        """Small enough to be a HUD element. Bigger boxes are never learned from or
+        suppressed. Coordinates are normalised, so this is a fraction of the frame."""
         area = (float(d["x2"]) - float(d["x1"])) * (float(d["y2"]) - float(d["y1"]))
         return 0.0 < area <= config.OVERLAY_MAX_BOX_AREA
 
@@ -125,12 +108,9 @@ class OverlayMask:
 
     @staticmethod
     def _rigid_cells(st: _SourceState) -> np.ndarray:
-        """Cells whose large boxes are too geometrically identical to be real.
-
-        A world-attached object seen from a moving camera changes apparent size;
-        a painted one does not. Compares coefficient of variation rather than
-        raw spread so the test is scale-free across box sizes.
-        """
+        """Cells whose large boxes are suspiciously identical. A real object changes
+        apparent size as the camera moves, a painted one does not. Uses the
+        coefficient of variation so it works at any box size."""
         n = st.big_n
         enough = n >= config.OVERLAY_LARGE_MIN_HITS
         if not enough.any():
@@ -152,19 +132,15 @@ class OverlayMask:
 
         if config.OVERLAY_LARGE_FILTER:
             big = self._rigid_cells(st)
-            # Same fail-open cap as the glyph channel: if this would blank a
-            # large part of the frame the premise has failed.
+            # same cap as the glyph channel
             st.big_mask = big if float(big.mean()) <= config.OVERLAY_MAX_FRACTION else None
         else:
             st.big_mask = None
 
         mask = (st.hits / max(st.frames, 1e-6)) >= config.OVERLAY_PERSISTENCE
         if config.OVERLAY_DILATE_CELLS > 0 and mask.any():
-            # A glyph's box jitters, so its centre falls in one of two or three
-            # neighbouring cells and no single one accumulates enough evidence
-            # on its own. Grow the mask to cover the cells the jitter reaches.
-            # A plain max-filter rather than scipy: one less dependency for a
-            # 64x64 boolean grid, and it is the same operation.
+            # a glyph's box jitters between neighbouring cells, so grow the mask a bit
+            # (a max filter, to avoid pulling in scipy)
             k = 2 * config.OVERLAY_DILATE_CELLS + 1
             padded = np.pad(mask, config.OVERLAY_DILATE_CELLS, constant_values=False)
             grown = np.zeros_like(mask)
@@ -174,8 +150,7 @@ class OverlayMask:
             mask = grown
         fraction = float(mask.mean())
         if fraction > config.OVERLAY_MAX_FRACTION:
-            # Too much of the frame -- the premise has failed (a genuinely
-            # static scene, a feed where everything persists). Fail open.
+            # too much of the frame, so the premise has failed. Fail open.
             st.mask = None
             st.masked_fraction = fraction
             return
@@ -193,9 +168,7 @@ class OverlayMask:
         grid = config.OVERLAY_GRID
         kept = []
         for d in detections:
-            # moving_object comes from the motion pass, which by construction
-            # never fires on something that isn't moving relative to the
-            # world -- it cannot be a painted glyph, so it is never masked.
+            # moving_object comes from the motion pass, so it is never a painted glyph
             if d.get("class_id", 0) == -1:
                 kept.append(d)
                 continue
@@ -204,8 +177,7 @@ class OverlayMask:
                 if d.get("class_id", 0) in config.OVERLAY_LARGE_EXEMPT:
                     kept.append(d)
                     continue
-                # Above the glyph limit: only the rigidity channel may drop it,
-                # and only when it is enabled.
+                # above the glyph size only the rigidity channel can drop it
                 if st.big_mask is None or not st.big_mask[gy, gx]:
                     kept.append(d)
                 continue

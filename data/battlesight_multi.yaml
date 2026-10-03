@@ -1,4 +1,4 @@
-# BattleSight AR — VisDrone (aerial) + WiderPerson (ground-level personnel)
+# BattleSight AR - VisDrone (aerial) + WiderPerson (ground-level personnel)
 # Same 4-class taxonomy as battlesight.yaml; WiderPerson only contributes to
 # class 0 (personnel), strengthening detection for helmet-cam / static-camera
 # sources that VisDrone's aerial-only imagery doesn't represent.

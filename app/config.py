@@ -75,6 +75,16 @@ LOGS_DIR = BASE_DIR / "runs" / "logs"
 
 CLASS_NAMES = ["personnel", "two_wheeler", "light_vehicle", "heavy_vehicle"]
 
+# --- Hosting ----------------------------------------------------------------
+# Turn this on for anything reachable from the internet. It drops /train and
+# /exclude, because anyone could otherwise start a fine-tune on your machine or
+# change what the detector hides.
+PUBLIC_DEMO = os.getenv("BATTLESIGHT_PUBLIC_DEMO", "0") not in ("0", "false", "False")
+# Comma separated. "*" is fine on a laptop, set real origins when you host it.
+CORS_ORIGINS = [o.strip() for o in os.getenv("BATTLESIGHT_CORS_ORIGINS", "*").split(",") if o.strip()]
+# Uploads bigger than this get a 413 instead of being decoded.
+MAX_UPLOAD_MB = int(os.getenv("BATTLESIGHT_MAX_UPLOAD_MB", "10"))
+
 # --- Motion filter, stages 1-2 (app/motion_filter.py) -----------------------
 # Tags anything moving coherently, not just the four trained classes.
 # 80 px^2 at MOTION_WORKING_WIDTH, not 30: a 5x6 smudge was most of the phantom

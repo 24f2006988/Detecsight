@@ -1,14 +1,14 @@
-# DetecSight — Engineering Log
+# DetecSight - Engineering Log
 
 The fix-by-fix record behind [`README.md`](README.md): what broke, how it was
-measured, what was changed, and — where it matters most — what was tried and
+measured, what was changed, and - where it matters most - what was tried and
 rejected. It is kept in chronological order rather than tidied into a narrative,
 so the sections near the end supersede earlier ones on the same subject.
 
 **Read it with that in mind.** Section 16 supersedes sections 14 and 15: those
 two were tuned against a mistaken description of the `v10`/`v11` test clips, and
 their diagnosis was wrong. Where a bullet is struck through, the strikethrough is
-the correction and the original text is kept underneath deliberately — a log that
+the correction and the original text is kept underneath deliberately - a log that
 silently deletes its wrong turns is not evidence of anything.
 
 Measured throughout on: Windows 11, RTX 4060 Laptop (8 GB), Python 3.12.10,
@@ -20,23 +20,23 @@ here is from that machine; see §19c before comparing any of them.
 ## What was tried and rejected
 
 The shortest useful summary of this file. Each row is a change that looked
-reasonable, was measured, and was **not** kept — with the number that killed it.
+reasonable, was measured, and was **not** kept - with the number that killed it.
 Full reasoning is in the linked section.
 
 | rejected | why, measured | where |
 |---|---|---|
-| **INT8 quantisation** | 4.23 ms vs FP16's 6.95 ms, but −4 pt mAP50 and −5 pt recall. At ~10 fps the per-frame fixed overhead dominates, so 2.7 ms buys nothing visible while 5 points of recall is visible. | §11 |
-| **Tuning `IOU_THRESHOLD` for crowds** | A silent no-op, and always had been. YOLO26's head reports `end2end: True` — it is NMS-free and the `iou=` argument is ignored. Sweeping 0.5/0.6/0.7/0.8 gave byte-identical results at every value. Crowd behaviour is *learned*; only training changes it. | §19 |
-| **Raising imgsz above 1280** | 1280→1536 buys +0.4% detections for +46% cost, and the *large* buckets get worse — above the trained size the model is off-distribution for its own scale priors. | §19 |
+| **INT8 quantisation** | 4.23 ms vs FP16's 6.95 ms, but -4 pt mAP50 and -5 pt recall. At ~10 fps the per-frame fixed overhead dominates, so 2.7 ms buys nothing visible while 5 points of recall is visible. | §11 |
+| **Tuning `IOU_THRESHOLD` for crowds** | A silent no-op, and always had been. YOLO26's head reports `end2end: True` - it is NMS-free and the `iou=` argument is ignored. Sweeping 0.5/0.6/0.7/0.8 gave byte-identical results at every value. Crowd behaviour is *learned*; only training changes it. | §19 |
+| **Raising imgsz above 1280** | 1280->1536 buys +0.4% detections for +46% cost, and the *large* buckets get worse - above the trained size the model is off-distribution for its own scale priors. | §19 |
 | **`MOTION_GATED`** | Goes blind to stationary targets. It is a real latency win and a real safety regression; the standing decision is that it stays off. | §5 |
-| **A drone-specialised checkpoint** | Retired after the blended `fpv` checkpoint beat it on the drone view's own home domain: VisDrone val personnel mAP50 0.3162 → 0.7064. Two weight files were kept in GPU memory to serve identical detections. | §17 |
+| **A drone-specialised checkpoint** | Retired after the blended `fpv` checkpoint beat it on the drone view's own home domain: VisDrone val personnel mAP50 0.3162 -> 0.7064. Two weight files were kept in GPU memory to serve identical detections. | §17 |
 | **Far-field second pass on by default** | Not rejected for cost but for jitter: p90 48.5 ms against a 26.9 ms median, which makes an AR overlay stutter. Kept, and off by default; good for offline annotation where latency is free. | §19 |
 | **EMA smoothing for the v7 burst** | Made it worse. Smoothing made the decision *slower*; the gate needed the decision to *last* longer, which is what `MOTION_CHRONIC_COOLDOWN` does. | §13 |
-| **`predict()` between `track()` calls** | Cost ~60% of detections, silently. Bisected by running the far-field pass with every box discarded: v5 personnel 1560 → 562 from the bare `predict()` call. Restoring `predictor.trackers` did not fix it. Fixed with a dedicated second model instance. | §19 |
+| **`predict()` between `track()` calls** | Cost ~60% of detections, silently. Bisected by running the far-field pass with every box discarded: v5 personnel 1560 -> 562 from the bare `predict()` call. Restoring `predictor.trackers` did not fix it. Fixed with a dedicated second model instance. | §19 |
 | **Raising `OVERLAY_MAX_BOX_AREA` for the v10 subtitle** | It is the module's only safety property: the size limit is what stops a drone holding a real target centred in frame from having it masked. The phantom box is 137x137 px at frame centre, which is what such a target looks like. Fixed with a rigidity test instead. | §22f |
 | **A confidence floor for the v10 phantoms** | Phantom confidence reaches 0.461; real `personnel` in the same clip reaches 0.535. The distributions overlap, and §20 already showed raising the vehicle floor is the wrong direction. | §22f |
 | **Applying the rigidity filter to `personnel`** | At conf 0.10, the floor the ground view runs personnel at, it removed 13 real personnel and zero phantoms. Low-confidence boxes dilute a cell's geometry until real detections look rigid. `personnel` is exempt. | §22g |
-| **Adding BDD100K/KITTI for the `v11` phantoms** | The diagnosis it rested on was wrong — the boxes were never on the scene, they were on the HUD. No training data would have fixed it. | §14 → §16 |
+| **Adding BDD100K/KITTI for the `v11` phantoms** | The diagnosis it rested on was wrong - the boxes were never on the scene, they were on the HUD. No training data would have fixed it. | §14 -> §16 |
 
 ---
 
@@ -44,15 +44,15 @@ Full reasoning is in the linked section.
 
 | section | subject |
 |---|---|
-| [Setup](#setup) · [Dataset](#dataset) · [Training](#training) · [API surface](#api-surface-in-full) | orientation |
+| [Setup](#setup) | [Dataset](#dataset) | [Training](#training) | [API surface](#api-surface-in-full) | orientation |
 | [Deviations from the original setup notes](#deviations-from-the-original-setup-notes) | what the notes got wrong |
-| §1–§4 | checkpoint, resolution, confidence, `max_det` |
+| §1-§4 | checkpoint, resolution, confidence, `max_det` |
 | §5, §5b | motion gating; TensorRT + WebRTC latency |
-| §6–§9 | ego compensation, `moving_object` explosions, chronic noise |
-| §10 | drone-view specialised model *(retired — see §17)* |
+| §6-§9 | ego compensation, `moving_object` explosions, chronic noise |
+| §10 | drone-view specialised model *(retired - see §17)* |
 | §11 | FP16 standard, INT8 rejected |
 | §12, §13 | screen capture; branch-selection flicker |
-| §14, §15 | **superseded by §16** — tuned against a wrong description of the clips |
+| §14, §15 | **superseded by §16** - tuned against a wrong description of the clips |
 | §16 | the clips were misidentified; the HUD was the dominant error source |
 | §17 | the `fpv` run: completed, measured, promoted |
 | §18 | lights vs. people; the split-second target |
@@ -60,11 +60,11 @@ Full reasoning is in the linked section.
 | §20 | dense ground-level crowds, and a confirmed vehicle-label contamination |
 | §21 | SARD: pose confirmed; fine-tuning on it alone destroyed the model |
 | §22 | SARD blended: 4.7x target recall, flat on the val, a rigidity filter, and why the last epoch is not the best one |
-| [Still outstanding](#still-outstanding) · [Known limitations](#known-limitations) | open problems |
+| [Still outstanding](#still-outstanding) | [Known limitations](#known-limitations) | open problems |
 
 ## Setup
 
-Installation, serving and the API contract are in [`README.md`](README.md) —
+Installation, serving and the API contract are in [`README.md`](README.md)  - 
 this file does not restate them. Two environment notes that cost real time and
 are not obvious from the README:
 
@@ -72,15 +72,15 @@ are not obvious from the README:
   wheel index, so a single `pip install -r requirements.txt` resolves the pinned
   `torch==2.13.0+cu126` / `torchvision==0.28.0+cu126` GPU builds directly, with
   no separate pre-install step. If `scripts/check_gpu.py` reports
-  `CUDA available: False`, something resolved a CPU wheel instead — reinstall
+  `CUDA available: False`, something resolved a CPU wheel instead - reinstall
   with `pip install --force-reinstall torch==2.13.0+cu126
   torchvision==0.28.0+cu126 --extra-index-url https://download.pytorch.org/whl/cu126`.
-- The datasets are not vendored. Point ultralytics at wherever they live —
-  `yolo settings datasets_dir="<your datasets dir>"` — and all three yamls in
+- The datasets are not vendored. Point ultralytics at wherever they live  - 
+  `yolo settings datasets_dir="<your datasets dir>"` - and all three yamls in
   `data/` resolve against it. None of them contains an absolute path: each
   anchors at VisDrone (a name that does not exist relative to cwd, which is what
   makes ultralytics consult `datasets_dir`) and reaches sibling datasets with
-  `../`. `path: .` would not work — "." always exists, so it is kept as cwd and
+  `../`. `path: .` would not work - "." always exists, so it is kept as cwd and
   the setting is never consulted.
 
 ## Dataset
@@ -135,7 +135,7 @@ leaves out.
 | `GET /train`, `GET /train/{id}` | job list / status with live epoch + log tail |
 | `POST /train/{id}/cancel` | terminate a running job |
 
-Boxes are returned as **normalised** `x1,y1,x2,y2` in 0–1 so the AR client can
+Boxes are returned as **normalised** `x1,y1,x2,y2` in 0-1 so the AR client can
 scale to its own viewport without knowing the source resolution.
 
 ## Deviations from the original setup notes
@@ -149,7 +149,7 @@ These are changes made because the code as specified did not work on this stack.
 
 2. **`_is_moving()` returns `bool(...)`.** The comparison yields `numpy.bool_`,
    which `json.dumps` rejects. Pydantic coerced it on the HTTP path, so only the
-   WebSocket broke — and only from the 3rd frame, once the history window filled.
+   WebSocket broke - and only from the 3rd frame, once the history window filled.
 
 3. **Per-feed trackers (`_bind_tracker` / `_adopt_tracker` in `detector.py`).**
    Ultralytics hangs a *single* tracker off the predictor and reuses it for every
@@ -161,7 +161,7 @@ These are changes made because the code as specified did not work on this stack.
    Windows text pipes decode as cp1252; ultralytics progress bars emit UTF-8
    box-drawing bytes that cp1252 cannot map. The reader thread died on
    `UnicodeDecodeError`, nothing drained the pipe, and the child blocked forever
-   on a full stdout buffer — every API-launched training hung at `running`
+   on a full stdout buffer - every API-launched training hung at `running`
    permanently. The reader body is now also wrapped in `try/except` so a reader
    failure kills the child instead of wedging the job.
 
@@ -179,7 +179,7 @@ These are changes made because the code as specified did not work on this stack.
 
 8. **Blocking inference moved off the event loop** (`run_in_threadpool` in both
    routers). The handlers were `async def` but called straight into YOLO, so a
-   single streaming feed blocked every other request — `/health` included — for
+   single streaming feed blocked every other request - `/health` included - for
    the duration of each frame. Measured: `/health` now answers in ~1.2 ms while a
    feed runs at ~25 ms/frame.
 
@@ -189,7 +189,7 @@ These are changes made because the code as specified did not work on this stack.
 
 10. **Motion history is a bounded LRU** (`MAX_TRACKS_PER_SOURCE`, default 512).
     Track ids only climb over a feed's life, so the old unbounded dict grew for
-    as long as a drone stayed connected — a slow leak on exactly the long-running
+    as long as a drone stayed connected - a slow leak on exactly the long-running
     feeds this is built for.
 
 11. **`trainer.start()` holds the lock across check-and-spawn.** Two POSTs
@@ -212,7 +212,7 @@ These are changes made because the code as specified did not work on this stack.
 
 15. **WebSocket hardening.** It never checked whether the model was loaded (first
     frame died on an `AttributeError` and the client just saw the socket drop),
-    and only cleaned up feed state on a clean `WebSocketDisconnect` — a crashed
+    and only cleaned up feed state on a clean `WebSocketDisconnect` - a crashed
     feed leaked its tracker. Cleanup now runs in `finally`.
 
 16. **Clear error when the model file is missing,** instead of failing deep
@@ -235,7 +235,7 @@ Detection quality was subpar. Four causes, found by measurement
 ### 2. Inference resolution was far too low for the target size
 
 The median VisDrone val object is **11 px** across at `imgsz=640`, and 75% of
-`personnel` boxes are under 16 px — at the floor of what the stride-8 head
+`personnel` boxes are under 16 px - at the floor of what the stride-8 head
 resolves. `IMGSZ` is now 1280.
 
 | checkpoint | imgsz | mAP50 | mAP50-95 | recall | personnel mAP50 |
@@ -248,7 +248,7 @@ resolves. `IMGSZ` is now 1280.
 
 Together that is **mAP50 0.2475 -> 0.5046** and **personnel mAP50 0.170 ->
 0.534**, with no retraining. On 1080p drone footage it is 33.5 vs 20.2
-detections per frame at 20 ms/frame — still ~50 fps for one feed.
+detections per frame at 20 ms/frame - still ~50 fps for one feed.
 
 1600 was measured and is worse than 1280 (30.3 dets, 38.9 ms), so 1280 is the
 top of the useful range.
@@ -264,14 +264,14 @@ top of the useful range.
 | 0.50 | 0.367 | 0.873 | 0.265 |
 
 F1 actually peaks near 0.16, but this model puts confident boxes on
-out-of-distribution scenes — on a close-up desk video it labelled a pencil case
-`light_vehicle` at 0.42 — and phantom contacts on an AR overlay are worse than
+out-of-distribution scenes - on a close-up desk video it labelled a pencil case
+`light_vehicle` at 0.42 - and phantom contacts on an AR overlay are worse than
 a missed one. 0.25 recovers most of the recall without opening the floor.
 
 ### 4. `max_det` truncated dense frames
 
 Ultralytics defaults `max_det=300`; VisDrone val frames hold up to 317 objects,
-so the densest frames — the ones where the count matters — were silently
+so the densest frames - the ones where the count matters - were silently
 capped. `MAX_DET` is now 500.
 
 ### 5. Motion gating made the tracked path blind to stationary targets
@@ -291,7 +291,7 @@ frames). For situational awareness a parked truck and a standing sentry are
 exactly what belongs on the overlay, so the default is now off.
 
 The cost is throughput: ~85 ms/frame at `IMGSZ=1280`, ~10 fps end-to-end over
-the WebSocket. Lowering `IMGSZ` does **not** buy that back — measured in one
+the WebSocket. Lowering `IMGSZ` does **not** buy that back - measured in one
 warm process with only `imgsz` varying, 640 costs a third of the detections to
 gain about 1 fps, because the tracked path is dominated by fixed overhead (the
 ~27 ms motion pass, ByteTrack, exclusion, postprocessing) rather than the
@@ -313,17 +313,17 @@ connection:
 | | |
 |---|---|
 | steady-state round trip | **~100 ms (≈10 fps)** |
-| of which server inference | 50–85 ms |
-| of which client JPEG encode | 7–10 ms |
+| of which server inference | 50-85 ms |
+| of which client JPEG encode | 7-10 ms |
 | first ~2 s of a feed | up to ~200 ms |
 
 The slow start is the laptop GPU clocking up from idle (270 MHz / 3.6 W between
-bursts), not a leak — latency is flat from frame ~80 through 240. Short
+bursts), not a leak - latency is flat from frame ~80 through 240. Short
 benchmark runs that finish before the clocks boost will report roughly double
 the real steady-state cost; warm up before trusting a number.
 
 **Those numbers are loopback (127.0.0.1) and exclude the network.** For a real
-second device, add wire time. The traffic is wildly asymmetric — the frame going
+second device, add wire time. The traffic is wildly asymmetric - the frame going
 up is everything, the boxes coming back are free:
 
 | direction | payload | time @50 Mbps |
@@ -345,7 +345,7 @@ Glass-to-overlay budget, device -> server -> device:
 So downscaling the *upload* is the main latency lever, and it is not free:
 720p q70 cuts the payload 3x and keeps 74% of detections, 540p keeps 59%.
 
-**Viability.** At ~125–190 ms this is usable for situational awareness — marking
+**Viability.** At ~125-190 ms this is usable for situational awareness - marking
 vehicles and people on a drone or vehicle feed, where targets move slowly in
 frame. It is *not* fast enough for head-locked AR reticles: boxes will visibly
 trail quick head motion. The client already receives `track_id` and a
@@ -366,18 +366,18 @@ TensorRT engine (`yolo export ... format=engine quantize=16`).
 matching `.pt` automatically whenever it exists and `BATTLESIGHT_USE_TENSORRT`
 isn't `0`, and falls back to the `.pt` checkpoint if the engine fails to load
 (wrong driver/TensorRT version) or `DEVICE=cpu`. Needs the `tensorrt` package
-installed separately, matched to your CUDA/driver — not something to
+installed separately, matched to your CUDA/driver - not something to
 auto-install, since a mismatched build fails silently different ways (see
 "Building an engine on this machine" below for what that took here).
 
-**Built and benchmarked on this machine as of 2026-09-01** — both
+**Built and benchmarked on this machine as of 2026-09-01** - both
 `weights/best.engine` and `weights/drone_best.engine` exist and are the
 checkpoints actually deployed (see §11 for the numbers). One correction to the
 reasoning above: the script's `--static` flag was originally framed as unsafe
 because this codebase runs inference at two sizes (`IMGSZ` for the
 full-frame/tracked path, `MOTION_CROP_IMGSZ` for the motion-gated crop path),
 and a static engine only serves the size it was built for. **That concern
-doesn't apply here** — `MOTION_GATED` is confirmed off and staying off (see
+doesn't apply here** - `MOTION_GATED` is confirmed off and staying off (see
 §5, and the explicit decision recorded in §11), so `MOTION_CROP_IMGSZ` is
 never actually invoked, and every real call in this deployment is batch=1 at
 `IMGSZ`. The dynamic-shape default was tried first and **failed**: ultralytics
@@ -386,7 +386,7 @@ requested 6.4 GB of workspace on top of everything else already resident and
 hit `OutOfMemory` on this 8 GB laptop GPU. `--static` (fixed batch=1, single
 shape) builds cleanly in ~4 minutes and is the right choice for how this
 service actually calls the model. If `MOTION_GATED` is ever turned back on,
-rebuild without `--static` first — the script's own runtime warning covers
+rebuild without `--static` first - the script's own runtime warning covers
 this.
 
 **Building an engine on this machine, if you need to repeat it:** the
@@ -398,14 +398,14 @@ The `tensorrt-cu12-libs` wheel is ~2.25 GB and this network's connection to
 --extra-index-url https://pypi.nvidia.com/ tensorrt-cu12 tensorrt-cu12-libs
 tensorrt-cu12-bindings --retries 10` attempts, resuming from pip's cache each
 time, before one completed. Separately, `onnxruntime-gpu` (used only for the
-ONNX-export accuracy check below, not for serving) needs pinning below 1.29 —
+ONNX-export accuracy check below, not for serving) needs pinning below 1.29  - 
 that version and later require CUDA 13 (`cublasLt64_13.dll`), which silently
 fails to load and falls back to CPU on a CUDA 12 machine, crashing on a
 device-mismatch error rather than failing loudly; `onnxruntime-gpu==1.20.2`
 matches CUDA 12. The first `export_engine.py` run also triggers ultralytics'
 own `pip install nvidia-modelopt[onnx]` (~500 MB across its dependencies,
 needed for the FP16-mixed-precision ONNX conversion step TensorRT export goes
-through) — budget ~25-30 minutes for that on a slow connection; it is a
+through) - budget ~25-30 minutes for that on a slow connection; it is a
 one-time cost; every export after it is fast.
 
 **Transport.** `app/routers/webrtc.py` adds `POST /webrtc/offer/{source_id}`
@@ -413,16 +413,16 @@ alongside (not instead of) `/ws/track/{source_id}`. WebRTC carries frames over
 UDP/SRTP instead of JSON-over-TCP: a dropped frame is skipped rather than
 stalling the connection waiting on retransmission, and the client hands over
 already-decoded video instead of paying a base64/JPEG round trip. Detections
-come back over an RTCDataChannel in the exact schema as the WebSocket path —
+come back over an RTCDataChannel in the exact schema as the WebSocket path  - 
 `app/detector.py` and `app/schemas.py` are untouched, only how frames arrive
 and results leave. Verified end-to-end in-process (synthetic video track in,
-detection JSON out, clean teardown on disconnect) — see the note below on what
+detection JSON out, clean teardown on disconnect) - see the note below on what
 that test did and didn't cover.
 
 `source_id` behaves identically to the WebSocket path: it's the same key into
 Detector's per-feed history/tracker/motion state, so multiple devices stay
 isolated from each other exactly as before. One GPU still serialises every
-feed — that ceiling from the section above is unchanged by either of these.
+feed - that ceiling from the section above is unchanged by either of these.
 
 **Deliberately not done:** client-side decoupled tracking (local
 Kalman/optical-flow extrapolation between server replies, described as the
@@ -432,10 +432,10 @@ stays authoritative on every frame; nothing here changes the client contract.
 ### 6. Ego compensation fails under parallax, flooding the overlay
 
 Ego compensation cancels **one global 2D transform**, which is valid for a
-distant near-planar scene (aerial — where it was tuned) but not for a
+distant near-planar scene (aerial - where it was tuned) but not for a
 close-range handheld view, where foreground and background cross the sensor at
 different rates. On `v1.mp4` the estimator never failed (0/76 frame pairs) and
-correctly flagged all 76 as a moving camera — and static desk furniture still
+correctly flagged all 76 as a moving camera - and static desk furniture still
 registered as motion, giving 7.4 phantom blobs/frame and 348 track IDs in 77
 frames.
 
@@ -456,7 +456,7 @@ path from 597 detections (94% phantom `moving_object`) to 86.
 ### 7. `moving_object` explosions on ground-level handheld feeds
 
 `v3.mp4` (handheld, railway platform) produced **1,954 `moving_object` boxes
-over 368 frames — 5.3/frame against 3.0/frame of real people**, swarming the
+over 368 frames - 5.3/frame against 3.0/frame of real people**, swarming the
 overlay. Three independent causes, all fixed:
 
 **a. The claim test used IoU instead of containment.** A walking person's
@@ -464,28 +464,28 @@ swinging leg or bag is a small blob sitting *entirely inside* a large
 `personnel` box. Its IoU with that box is `blob_area / person_area`, far below
 `MOTION_CLAIM_IOU`, so the blob escaped the claim and was re-emitted as a
 separate phantom stacked on a person who was already correctly detected.
-**425 boxes — 22% of all output.** What matters is whether a blob is already
+**425 boxes - 22% of all output.** What matters is whether a blob is already
 accounted for, which is containment, not IoU. `_claim_motion_blobs` now scores
 `max(intersection/blob_area, IoU)`.
 
 **b. Handheld jitter was routed to MOG2.** `EGO_STATIC_SHIFT` was 1.0 px, so a
-camera drifting 0.5–1.0 px/frame counted as "static" and went to background
-subtraction, which has no tolerance for even sub-pixel movement — every
+camera drifting 0.5-1.0 px/frame counted as "static" and went to background
+subtraction, which has no tolerance for even sub-pixel movement - every
 high-contrast edge in the scene flickered as foreground. Only **56 of 368
 frames** on `v3.mp4` exceeded 1.0 px, so 85% of the clip took the MOG2 path.
 Now 0.3 px, so that jitter goes through ego compensation instead.
 
-**c. The blob floor was meaningless.** `MOTION_MIN_BLOB_AREA` was 30 px² — a
+**c. The blob floor was meaningless.** `MOTION_MIN_BLOB_AREA` was 30 px² - a
 5×6 pixel smudge. Phantom blobs had a median area of 284 px² against 10,870 px²
 for a real `personnel` box, a 38× separation with room to spare. Now 80 px².
 
-Result on `v3.mp4`: **1,954 → 279 `moving_object` (5.3 → 0.8 per frame, −86%)**
+Result on `v3.mp4`: **1,954 -> 279 `moving_object` (5.3 -> 0.8 per frame, -86%)**
 with `personnel` unchanged at exactly 1,121 detections and track IDs preserved.
 `drone_pan.mp4` is unchanged at 26.5 real detections/frame; `moving.mp4` and
 `static.mp4` emit zero phantoms.
 
 **If it still fires too much on a ground feed**, raise
-`BATTLESIGHT_MOTION_MIN_AREA` — but note that is the floor on how small an
+`BATTLESIGHT_MOTION_MIN_AREA` - but note that is the floor on how small an
 unrecognised moving thing can be and still be reported, which is exactly the
 distant-UAV case `moving_object` exists for. At 1080p, 80 px² is a ~36×36 px
 object in the full frame. Raise it for cleaner ground feeds, lower it for
@@ -493,7 +493,7 @@ smaller air targets.
 
 ### 8. `moving_object` bursts on a chronically-noisy background (the "vertex explosion")
 
-Even after fix 7, `v3_annotated.mp4` still showed a burst — frames 108-113
+Even after fix 7, `v3_annotated.mp4` still showed a burst - frames 108-113
 jumped from a ~2-4/frame baseline to **16 `moving_object` boxes in one
 frame**, scattered across the tree line and frame edges at 0.68-1.00
 confidence: a swarm of small magenta boxes flickering in and out over half a
@@ -506,11 +506,11 @@ diffing. The foliage never settles into MOG2's background model, so raw
 foreground sits at a **chronic 19-24% median** in that stretch (vs 2-9%
 elsewhere in the same clip) and fragments into dozens of tiny blobs whose
 count swings every frame. For a few consecutive frames enough fragments drift
-the same direction to pass `MOTION_COHERENCE_THRESHOLD` together — a burst,
+the same direction to pass `MOTION_COHERENCE_THRESHOLD` together - a burst,
 not a single bad frame.
 
 The ego-compensated branch already had a sanity check for exactly this shape
-of failure (`EGO_MAX_RESIDUAL`, §6) — the plain-MOG2 branch had none. Added
+of failure (`EGO_MAX_RESIDUAL`, §6) - the plain-MOG2 branch had none. Added
 `MOTION_MOG2_MAX_FRACTION` (0.12) as its counterpart in
 `MotionDetector.detect()`: when raw MOG2 foreground exceeds it, that frame's
 blobs are dropped rather than fed to the coherence gate. 0.12 sits above every
@@ -518,9 +518,9 @@ quiet-frame fraction measured on this clip (peaks ~0.10) and below the
 ~0.19-0.24 foliage baseline, so it cuts the bad stretch without touching the
 clean 80% of the clip.
 
-Result on `v3.mp4`: **279 → 33 `moving_object` boxes (0.8 → 0.09/frame)**,
-peak-frame count 16 → 3, with `personnel`/vehicle detections on the same
-frames unchanged — `MOTION_GATED=0` means classification never depended on
+Result on `v3.mp4`: **279 -> 33 `moving_object` boxes (0.8 -> 0.09/frame)**,
+peak-frame count 16 -> 3, with `personnel`/vehicle detections on the same
+frames unchanged - `MOTION_GATED=0` means classification never depended on
 the motion pass; this only removes the phantom class-agnostic contacts and
 their `MOVING` tag during the noisy stretch.
 
@@ -986,10 +986,10 @@ This section corrects sections 14 and 15 on a point of fact, so read it before
 relying on either. `v10.mp4` and `v11.mp4` are **not** "a wildlife/nature clip"
 and "a forward-facing highway dashcam". Both are UAV/FPV combat footage:
 
-- `v10.mp4` — a drone observing **personnel moving through vegetation**, in a
+- `v10.mp4` - a drone observing **personnel moving through vegetation**, in a
   false-colour EO/IR-style palette (the grass renders magenta), with a HUD
   (crosshair, `425`, unit emblem, telemetry) and burned-in subtitles.
-- `v11.mp4` — an **FPV drone** flying low over open terrain, 564x480 analog
+- `v11.mp4` - an **FPV drone** flying low over open terrain, 564x480 analog
   video, fisheye, heavy compression, with a HUD (two dotted reticle columns,
   a `UEX10 002587` telemetry string, a range readout, an emblem).
 
@@ -1004,13 +1004,13 @@ would not have addressed the actual failure at all.
 Section 14 attributed them to the classifier having no notion of this camera
 angle. Re-measured with the reconstructed `scripts/diagnose_bursts.py`
 (16c below), the deployed system emits **54,658 `light_vehicle` boxes across
-1,746 frames — 31.3 per frame** on a clip containing no vehicles.
+1,746 frames - 31.3 per frame** on a clip containing no vehicles.
 
 Rolling-median burst detection reports *zero* bursts on that series, which is
 itself the clue: this is not an explosion on some frames, it is a constant
 error on nearly every frame.
 
-Accumulating those boxes into a spatial heatmap reproduces the HUD exactly —
+Accumulating those boxes into a spatial heatmap reproduces the HUD exactly  - 
 one box per dash of each dotted reticle column, one per character of the
 telemetry string, one per character of the range readout. Median false box:
 **9x9 px**, i.e. glyph-sized. Total footprint: 1.6% of the frame.
@@ -1029,7 +1029,7 @@ moving or parked, is attached to the world and traverses the frame as the
 camera pans.
 
 So the filter accumulates, per source, which grid cells keep producing small
-detections **while the camera is established to be moving** — reusing the
+detections **while the camera is established to be moving** - reusing the
 motion pass's existing ego-motion estimate rather than computing a second one.
 Three conditions, each covering a different failure of the others:
 
@@ -1040,7 +1040,7 @@ Three conditions, each covering a different failure of the others:
    target masked, however persistent it looks.
 3. A hard cap (`OVERLAY_MAX_FRACTION`): past that, the premise has broken down
    and the filter disables itself. Failing **open** is the only acceptable
-   direction here — same reasoning as `MOTION_GATED` being off.
+   direction here - same reasoning as `MOTION_GATED` being off.
 
 Parameters swept offline against cached detections, so every row is the same
 inference with only the filter varying. "v11 removed" is the share of that
@@ -1064,17 +1064,17 @@ Verified live through `Detector.track()` on the TensorRT path:
 
 | | before | after |
 |---|---|---|
-| `v11` `light_vehicle` total | 54,658 | **6,713** (−87.7%) |
+| `v11` `light_vehicle` total | 54,658 | **6,713** (-87.7%) |
 | `v11` `light_vehicle` per frame | 31.3 | **3.84** |
 | `v11` `heavy_vehicle` | 303 | 90 |
 | `v11` `two_wheeler` | 627 | 512 |
-| `v10` (every class) | — | **unchanged, exactly** |
+| `v10` (every class) | - | **unchanged, exactly** |
 
 `v10`'s counts are byte-identical before and after, which is the result to
 want: the filter engages only where there is evidence for it.
 
 **TRIED AND REJECTED** as a second condition: requiring the cell's pixels to be
-temporally static. It carries no information on this footage — a glyph sits on
+temporally static. It carries no information on this footage - a glyph sits on
 a *changing* background and an analog FPV feed is noisy everywhere. Of the 40
 cells with persistence >= 0.3 on `v11`, requiring cell std <= 0.35x the frame's
 median kept only 11; loosening it enough to keep them (1.0x) admitted 2048
@@ -1095,7 +1095,7 @@ that this reconstruction measures the same thing the original did.
 
 Two caveats on its numbers. `--motion-only` counts are strictly higher than the
 served path, because `_claim_motion_blobs` removes blobs already covered by a
-classifier box. And burst *counts* can rise when a fix lowers totals — the
+classifier box. And burst *counts* can rise when a fix lowers totals - the
 rolling-median baseline drops with them, so smaller spikes clear the relative
 threshold. Compare totals and max/frame alongside the burst count.
 
@@ -1126,7 +1126,7 @@ Adopted 3. Full-sweep regression (ground view, motion-only), cooldown 0 vs 3:
 #### 16e. The real personnel problem, measured
 
 On `v10.mp4` the deployed system puts `personnel` boxes on **vegetation** while
-**missing every actual person in frame** — at frame 300, two people are plainly
+**missing every actual person in frame** - at frame 300, two people are plainly
 visible and it returns zero detections. This is far worse than the clean-val
 `personnel` mAP50 of 0.567 suggests, because VisDrone and WiderPerson do not
 contain this case at all.
@@ -1139,7 +1139,7 @@ Three things were ruled out by measurement rather than assumed:
   finds 1 person across the same four frames. The generic model fails too.
 - **Not the motion channel picking up the slack.** At *either* drone coherence
   threshold (0.85 or the pre-15 value of 0.5) the motion filter puts boxes only
-  on the burned-in subtitles, never on the people — they crawl too slowly to
+  on the burned-in subtitles, never on the people - they crawl too slowly to
   clear `MOTION_COHERENCE_MIN_PATH` over a 4-frame window. Section 15's choice
   between those thresholds does not affect this clip's personnel recall either
   way, contrary to the reasoning recorded there.
@@ -1153,22 +1153,22 @@ it is the one thing in this document that no threshold can close.
 - **`albumentations` was not installed in this venv at all.** Ultralytics skips
   its entire Albumentations stage silently when the import fails (info-level
   log only), so *every checkpoint in this project was trained with zero blur,
-  noise, compression or colour augmentation* — not merely with the library
+  noise, compression or colour augmentation* - not merely with the library
   defaults, which is what the absence of any note about it would suggest.
 - `scripts/fpv_augment.py` adds an `fpv` profile modelling the real input
-  chain in capture order — optics (motion blur/defocus), sensor resolution
+  chain in capture order - optics (motion blur/defocus), sensor resolution
   (downscale), sensor noise, codec (compression), exposure, then palette.
   Ultralytics 8.4 takes a custom transform list through the first-class
   `augmentations=` argument, so no library patching is involved. Deliberately
   moderate: degradation strong enough to look dramatic erases an 11 px target
   and teaches the model to fit noise against a label with nothing under it.
   The palette transforms (wide hue rotation, occasional channel shuffle) exist
-  specifically because of 16e — ultralytics' own `hsv_h` default is a ±1.5%
+  specifically because of 16e - ultralytics' own `hsv_h` default is a ±1.5%
   rotation, nowhere near enough to span a false-colour feed.
 - **`data/battlesight_fpv.yaml`** adds VisDrone's **test-dev split to train**:
   all 1,610 images carry ground truth and were used by neither train nor val, a
   free ~25% increase in VisDrone training data costing no held-out set.
-- **AerialPerson** (Zenodo 7740081, CC-BY-4.0) — UAV frames over campus and
+- **AerialPerson** (Zenodo 7740081, CC-BY-4.0) - UAV frames over campus and
   Civil Defense exercises, 3,136 images, already YOLO format, single class
   `people` which is already id 0 == `personnel`. Median box ~11 px at imgsz
   1280. It is the only source here with a person seen small from altitude
@@ -1178,15 +1178,15 @@ it is the one thing in this document that no threshold can close.
   (ultralytics fails hard otherwise), and prints the launch command. It never
   starts training itself.
 - The deployed checkpoints were trained at **imgsz 640 but are served at 1280**
-  — a train/serve mismatch on exactly the tiny targets this system cares about.
+  - a train/serve mismatch on exactly the tiny targets this system cares about.
   The prepared command trains at 1280.
 
 
-#### 16g. AerialPerson labels people only — vehicles had to be pseudo-labelled
+#### 16g. AerialPerson labels people only - vehicles had to be pseudo-labelled
 
 Caught before training, not after. AerialPerson is single-class: it annotates
 people and nothing else. Its imagery is top-down aerial over a university
-campus, i.e. large parking lots — and none of those cars carry a label. That is
+campus, i.e. large parking lots - and none of those cars carry a label. That is
 the **same viewpoint VisDrone teaches vehicles from**, so mixing the two raw
 presents every one of those cars to the trainer as a confirmed negative for
 `light_vehicle`.
@@ -1197,14 +1197,14 @@ at conf 0.35:
 | class | per image |
 |---|---|
 | `personnel` | 11.6 |
-| `light_vehicle` | **97.3 — none labelled** |
+| `light_vehicle` | **97.3 - none labelled** |
 | `two_wheeler` | 0.8 |
 | `heavy_vehicle` | 0.5 |
 
 Across 2,613 train images that extrapolates to roughly **258,000 unlabelled
 vehicles**, which is more negative vehicle evidence than VisDrone supplies
 positive. This would not have diluted the vehicle classes, it would have
-destroyed them — and the failure would have surfaced only after a 7-hour run,
+destroyed them - and the failure would have surfaced only after a 7-hour run,
 as an unexplained `light_vehicle` collapse in the rubric.
 
 `scripts/pseudo_label_vehicles.py` labels the vehicles with the existing
@@ -1212,7 +1212,7 @@ drone-view checkpoint and merges them into the label files. Guardrails, since
 pseudo-labelling is easy to get wrong:
 
 - Ground-truth person boxes are never modified or removed.
-- A pseudo-box overlapping a ground-truth person (IoU > 0.3) is dropped — the
+- A pseudo-box overlapping a ground-truth person (IoU > 0.3) is dropped - the
   human label wins; we do not relabel a person as a vehicle.
 - Vehicle classes only. `personnel` is what this dataset already annotates
   properly, and the model's personnel predictions are the thing being fixed.
@@ -1225,14 +1225,14 @@ pseudo-labelling is easy to get wrong:
 **This applies to WiderPerson too**, which has been in the training mix since
 `battlesight_multi.yaml`: ground-level street scenes, personnel-only labels,
 unlabelled traffic. It is weaker there because ground-level cars look different
-from VisDrone's aerial ones, so the contradiction is less direct — but it is a
+from VisDrone's aerial ones, so the contradiction is less direct - but it is a
 pre-existing, previously undocumented source of vehicle-class damage and a
 prime suspect if vehicle metrics ever look inexplicably poor.
 
 
 ### 17. The `fpv` run: completed, measured, promoted (2026-09-02)
 
-`battlesight_fpv` — the run prepared in section 16f — was executed, evaluated
+`battlesight_fpv` - the run prepared in section 16f - was executed, evaluated
 and promoted. It is the first checkpoint in this project trained with any
 blur/noise/compression/colour augmentation at all (albumentations was simply
 not installed before; ultralytics skips that stage silently when the import
@@ -1242,11 +1242,11 @@ fails, so every earlier checkpoint had none).
 (18,694 train / 1,548 val). Interrupted after epoch 3 and resumed with
 `python scripts/train.py --resume --name battlesight_fpv`. The resume restored
 the optimizer state, the epoch counter and all 10 `fpv` transforms without any
-flags being re-passed, exactly as section 16f predicted — that path is now
+flags being re-passed, exactly as section 16f predicted - that path is now
 proven against a real interruption rather than a deliberate test kill.
 
 Per-epoch val mAP50: 0.573, 0.580, 0.592, 0.607, 0.626, 0.626, 0.634, 0.638.
-Monotonic, still climbing at epoch 8 — the run was budget-limited, not
+Monotonic, still climbing at epoch 8 - the run was budget-limited, not
 converged.
 
 **The rubric** (`eval_rubric.py`, candidate vs. the then-deployed
@@ -1265,7 +1265,7 @@ the one that matters most: it is the direct check on the AerialPerson
 pseudo-labelling trap in section 16f, and `light_vehicle` at 0.860 shows the
 263,700 pseudo-labels did not poison the class they were added to protect.
 
-**FP16 engine parity — a check the rubric does not perform.** `eval_rubric.py`
+**FP16 engine parity - a check the rubric does not perform.** `eval_rubric.py`
 measures the `.pt`, but `Detector.load()` serves `weights/best.engine`. The
 rebuilt engine was validated separately:
 
@@ -1276,13 +1276,13 @@ rebuilt engine was validated separately:
 | recall | 0.570 | 0.571 |
 | inference | 28.8 ms | **14.8 ms** |
 
-Every class within 0.002 mAP50-95 — FP16 rounding, not degradation, in clear
+Every class within 0.002 mAP50-95 - FP16 rounding, not degradation, in clear
 contrast to the INT8 result in section 11. The engine is also roughly twice as
 fast as the checkpoint, which is the other reason the export step is not
 optional: skipping it costs both correctness *and* half the throughput.
 
 **Promoted**, with rollback kept as `weights/best_pre_fpv.pt` **and**
-`weights/best_pre_fpv.engine` — keeping the old engine as well as the old
+`weights/best_pre_fpv.engine` - keeping the old engine as well as the old
 checkpoint makes a rollback a file copy instead of a 3-minute rebuild.
 `weights/best_int8.engine` is now stale (old checkpoint); it is not loaded by
 default, but rebuild or delete it before revisiting INT8.
@@ -1303,7 +1303,7 @@ rather than being replaced on the strength of the ground result:
 | overall mAP50 | 0.5036 | **0.6274** |
 | personnel mAP50 | 0.3162 | **0.7064** |
 
-PASS, and by a far wider margin than the ground comparison — personnel more than
+PASS, and by a far wider margin than the ground comparison - personnel more than
 doubled on VisDrone val, drone view's own home domain. Part of that gap is the
 640-vs-1280 train/serve mismatch this run existed to close, but 1280 is the
 serving resolution, so it is the deployment-realistic comparison.
@@ -1324,14 +1324,14 @@ frames, old drone checkpoint vs new:
 | v10.mp4 | old `drone_best` | new |
 |---|---|---|
 | `personnel` | 245 (in 132 frames, 35.3%) | **0** |
-| `light_vehicle` | 385 | **58** (−85%) |
+| `light_vehicle` | 385 | **58** (-85%) |
 | `heavy_vehicle` | 20 | **0** |
 
 Those 245 old `personnel` boxes were **all false positives on vegetation**.
 Rendered and inspected directly: frame 186 has a person plainly visible, prone in
-the open, and the old model put 8 small `personnel` boxes (conf 0.26–0.53)
+the open, and the old model put 8 small `personnel` boxes (conf 0.26-0.53)
 scattered across the magenta foliage with **not one on the person**. The new
-model returns zero detections on that frame — it stopped hallucinating people in
+model returns zero detections on that frame - it stopped hallucinating people in
 the grass, but it still does not find the person.
 
 So the run **removed ~592 false positives on this clip and gained no true
@@ -1341,28 +1341,28 @@ says must not be normalised), but it is not what the run was for.
 This is precisely what §7 predicted before the run: *"nothing in AerialPerson
 shows a prone or crawling person, which is the specific v10 failure. Expect
 partial help."* The prediction was right, and the remaining gap is now narrower
-and better characterised — it is **pose**, not palette, viewpoint or resolution.
+and better characterised - it is **pose**, not palette, viewpoint or resolution.
 The new model is trained on false-colour EO/IR-like augmentation and on aerial
 personnel, and it still misses a prone body from above. Closing this needs
 training data containing prone/crawling people seen from a UAV; no dataset
 currently in the mix has it.
 
-### 17b. Personnel confidence floor 0.20 → 0.10 on ground view, chosen on F2 (2026-09-02)
+### 17b. Personnel confidence floor 0.20 -> 0.10 on ground view, chosen on F2 (2026-09-02)
 
 The note justifying the old 0.20 floor claimed that dropping it "buys only ~2
 points of recall". **That was an artefact of the validation set, not a property
 of the model.** The sweep behind it ran on the blended val, where VisDrone's
 aerial personnel dominate by instance count and their P/R curve genuinely is
-flat — which masked the ground-level headroom underneath it.
+flat - which masked the ground-level headroom underneath it.
 
 Re-measured with a class-specific sweep, class 0 only, split by domain, on the
-`fpv` checkpoint. WiderPerson val, 1,000 ground-level images — the bodycam-like
+`fpv` checkpoint. WiderPerson val, 1,000 ground-level images - the bodycam-like
 case:
 
 | conf | P | R | F1 | F2 | |
 |---|---|---|---|---|---|
 | 0.08 | 0.600 | 0.750 | 0.667 | **0.714** | F2 optimum |
-| **0.10** | 0.657 | 0.725 | 0.689 | 0.710 | **adopted** — the knee |
+| **0.10** | 0.657 | 0.725 | 0.689 | 0.710 | **adopted** - the knee |
 | 0.12 | 0.701 | 0.703 | 0.702 | 0.703 | |
 | 0.15 | 0.753 | 0.674 | 0.712 | 0.689 | |
 | 0.20 | 0.814 | 0.636 | **0.714** | 0.665 | previous floor, F1 optimum |
@@ -1371,16 +1371,16 @@ case:
 **Chosen on F2, not F1.** F1 weights precision and recall equally, which is the
 wrong objective for a system whose standing principle is that a phantom contact
 is a nuisance and a suppressed real one is not acceptable. F2 peaks at 0.08, but
-0.10 scores within 0.004 of that peak while recovering 5.7 points of precision —
+0.10 scores within 0.004 of that peak while recovering 5.7 points of precision  - 
 so 0.10 is the knee, and 0.08 is not worth the precision.
 
-Effect: personnel recall on ground-level imagery **0.636 → 0.725**, about 18%
-more people found, at precision 0.814 → 0.657. A deliberate trade — roughly one
+Effect: personnel recall on ground-level imagery **0.636 -> 0.725**, about 18%
+more people found, at precision 0.814 -> 0.657. A deliberate trade - roughly one
 box in three now wrong, against roughly one person in four previously missed.
 
 **Ground view only.** On VisDrone val (aerial) precision at 0.10 collapses to
 0.431, so drone view keeps 0.25. Ground-level personnel mAP50 is 0.757, better
-than the blended 0.706 and better than aerial's 0.605 — the model is stronger at
+than the blended 0.706 and better than aerial's 0.605 - the model is stronger at
 ground-level people than the headline number suggests.
 
 Secondary effect on tracking: `Detector._model_conf_floor()` passes the lowest
@@ -1393,7 +1393,7 @@ dropping them.
 photography, not motion-blurred bodycam or rendered game footage. This sweep
 cannot say how the model behaves there. If short-span personnel recall is still
 not good enough, the fix is training coverage of dense, occluded, ground-level
-people — not a further threshold drop. (See §20: it is also the dataset behind
+people - not a further threshold drop. (See §20: it is also the dataset behind
 the ground-level vehicle collapse.)
 
 ### 18. Lights vs. people, and the split-second target (2026-09-02)
@@ -1444,25 +1444,25 @@ Measured across the clip sweep, `--view ground`, served path:
 
 | clip | `moving_object` | bursts | frames blind |
 |---|---|---|---|
-| v1 | 4 → 3 | 0 → 0 | 60 → 47 |
-| v3 | 27 → 44 | 0 → 0 | 196 → 167 |
-| v4 | 63 → 6 | 0 → 0 | 25 → 3 |
-| v5 | 16 → **0** | 0 → 0 | 0 → 0 |
-| v6 | 344 → 326 | 0 → 1 | **535 → 70** |
-| v7 | 99 → 29 | 0 → 0 | 36 → 29 |
-| v10 | **449 → 34** | **6 → 1** | 97 → 69 |
-| v11 | **2707 → 2105** | **65 → 43** | 508 → 445 |
+| v1 | 4 -> 3 | 0 -> 0 | 60 -> 47 |
+| v3 | 27 -> 44 | 0 -> 0 | 196 -> 167 |
+| v4 | 63 -> 6 | 0 -> 0 | 25 -> 3 |
+| v5 | 16 -> **0** | 0 -> 0 | 0 -> 0 |
+| v6 | 344 -> 326 | 0 -> 1 | **535 -> 70** |
+| v7 | 99 -> 29 | 0 -> 0 | 36 -> 29 |
+| v10 | **449 -> 34** | **6 -> 1** | 97 -> 69 |
+| v11 | **2707 -> 2105** | **65 -> 43** | 508 -> 445 |
 
-**v5's 16 → 0 was checked visually rather than assumed**, because a clip losing
+**v5's 16 -> 0 was checked visually rather than assumed**, because a clip losing
 its entire motion channel is exactly what a bad gate looks like. It is a
 sodium-lit night courtyard; the rejected blobs sit on empty pavement and shadow
 edges beside the walking pair, never on a person (frames 44 and 131 rendered and
 inspected). They were lighting artefacts, and the real people in that clip are
 carried by the classifier -- personnel 1,560. v6's verified-real count is
-preserved (344 → 326) while its blind frames collapse, which is the outcome that
+preserved (344 -> 326) while its blind frames collapse, which is the outcome that
 matters most: more coverage, same real detections, far less noise.
 
-v3 rising 27 → 44 is recovered coverage, not new noise -- it comes with 29 fewer
+v3 rising 27 -> 44 is recovered coverage, not new noise -- it comes with 29 fewer
 blind frames and no bursts.
 
 **The fast path fires on real footage**, and these are detections the old system
@@ -1479,7 +1479,7 @@ could not produce at all:
 (Motion-only counts, so higher than the served path -- `_claim_motion_blobs`
 removes YOLO-covered blobs. The ratio is the point.)
 
-**Honest limitation.** v2 and v9 barely moved (224 → 221, 224 → 223). Their
+**Honest limitation.** v2 and v9 barely moved (224 -> 221, 224 -> 223). Their
 residual sits far above 2x `EGO_MAX_RESIDUAL`, so the degraded band never
 reaches them and they still go blind. Raising the factor would reach them at the
 cost of admitting genuinely parallax-broken frames; that trade has not been
@@ -1621,7 +1621,7 @@ reason the parallel result is trustworthy at all.
 
 ### 20. Dense ground-level crowds, and a confirmed vehicle-label contamination (2026-09-05)
 
-A pedestrian crossing at rush hour, 1280×720, 3,212 frames — hundreds of people
+A pedestrian crossing at rush hour, 1280×720, 3,212 frames - hundreds of people
 per frame at every scale from 10 px to full height, with vehicles crossing
 between phases. This is the densest ground-level footage the system has been run
 on, and it was chosen to test the case `CrowdHuman` was registered for.
@@ -1640,36 +1640,36 @@ on, and it was chosen to test the case `CrowdHuman` was registered for.
 
 **a. The system tracks the near field well and is effectively blind past
 mid-field.** Detections cluster in the lower third of the frame; the standing
-crowd behind it, several hundred people at 10–25 px, produces almost nothing.
+crowd behind it, several hundred people at 10-25 px, produces almost nothing.
 The size histogram of what it *reports* is the mirror image of what is *there*:
 
 | detected box size | share of detections |
 |---|---|
 | <16 px | 5 boxes, 0.0% |
-| 16–32 px | 12.7% |
-| 32–48 px | 8.1% |
-| 48–64 px | 7.4% |
-| 64–96 px | 19.4% |
+| 16-32 px | 12.7% |
+| 32-48 px | 8.1% |
+| 48-64 px | 7.4% |
+| 64-96 px | 19.4% |
 | >96 px | **52.4%** |
 
 Median detected box is 98.6 px. In a scene dominated by small people, over half
 of what comes back is large. This is §19's size-recall curve reproduced on real
-footage rather than on a validation split, and it is consistent with it —
+footage rather than on a validation split, and it is consistent with it  - 
 nothing new is wrong, but the shape of the limit is now visible outside the lab.
 
 **b. Latency scales with detection count, which the sparse clips hid.** 46.1 ms
 median here against the 24.6 ms measured on `v5` in §19c. The extra cost is
-per-detection work — tracking association, motion claiming, exclusion embedding
-— not model inference, which stayed at 18.7 ms. The 40 ms budget in §19 holds on
+per-detection work - tracking association, motion claiming, exclusion embedding
+ -  not model inference, which stayed at 18.7 ms. The 40 ms budget in §19 holds on
 sparse footage and does not hold on a crowd. Worth stating plainly because §19's
 number was measured on clips averaging a tenth of this density.
 
 **c. Vehicle recall on ground-level urban footage has collapsed. The vehicles
 are found and then thrown away at the confidence floor.**
 
-Over frames 500–559, which contain a taxi, a white van, a box truck and several
+Over frames 500-559, which contain a taxi, a white van, a box truck and several
 cars continuously and unambiguously in frame, the stateless path returned
-**4 `light_vehicle` detections in 60 frames — 0.07/frame**, against roughly six
+**4 `light_vehicle` detections in 60 frames - 0.07/frame**, against roughly six
 vehicles visibly present per frame. Rendered and inspected directly: at frame
 514 not one of the six is boxed, while 78 `personnel` are.
 
@@ -1680,10 +1680,10 @@ vehicles visibly present per frame. Rendered and inspected directly: at frame
 > support it as the main cause. The original claim is not preserved because it
 > was wrong on the magnitude, not merely incomplete.
 
-A stock COCO `yolo26n` — which has never seen this project's training mix, and
-so carries none of its biases — was run on the same frames as a control:
+A stock COCO `yolo26n` - which has never seen this project's training mix, and
+so carries none of its biases - was run on the same frames as a control:
 
-| on frames 500–559 | vehicles found |
+| on frames 500-559 | vehicles found |
 |---|---|
 | stock COCO `yolo26n`, conf 0.35 | **5.80/frame** (40 car, 17 truck, 1 bus) |
 | `weights/best.pt`, conf 0.25 (deployed) | 0.10/frame |
@@ -1697,7 +1697,7 @@ near-zero confidence.** That is a different failure from not having learned
 them: a model that had never seen ground-level vehicles would return nothing at
 any threshold, or return nonsense. This one returns the right boxes at 0.02.
 
-That signature — correct localisation, suppressed confidence — is what negative
+That signature - correct localisation, suppressed confidence - is what negative
 evidence produces. So the mechanism of the contamination hypothesis is right.
 The magnitude attributed to WiderPerson was not. Measured with the same stock
 control over 300 training images per dataset:
@@ -1709,14 +1709,14 @@ control over 300 training images per dataset:
 | CrowdHuman | **0.06/image** | 3% | 0 |
 
 WiderPerson contributes on the order of ~1,800 unlabelled vehicles across its
-8,000 images — real contamination, and it should still be fixed, but two orders
+8,000 images - real contamination, and it should still be fixed, but two orders
 of magnitude short of AerialPerson's ~258,000 and too small to be the whole
 cause on its own.
 
 **The larger cause is an asymmetry in training coverage that was never
 noticed.** `personnel` has both aerial data (VisDrone, AerialPerson) *and*
 ground-level data (WiderPerson). The three vehicle classes have **aerial data
-only** — VisDrone is the sole source, and AerialPerson's pseudo-labels are also
+only** - VisDrone is the sole source, and AerialPerson's pseudo-labels are also
 aerial. The model has effectively learned "a vehicle is a small object seen from
 above," so a large, close, horizontal-view car is off-distribution for the
 vehicle classes specifically while being perfectly in-distribution for
@@ -1729,7 +1729,7 @@ Consequences, revised:
   detectors that agree: 0.047/image with `weights/best.pt`, 0.06/image with the
   stock control, and only 3% of images contain a vehicle at all. The plan's
   decision rule was to skip below ~1/image, and this is far below it. CrowdHuman
-  is dense human crowds — stadiums, gatherings, indoor scenes — not street
+  is dense human crowds - stadiums, gatherings, indoor scenes - not street
   traffic, so the AerialPerson trap simply does not apply to it. The conversion
   is sound: 339,565 person boxes over 15,000 images, ~22.6/image as expected.
 - **Pseudo-label WiderPerson anyway**, but expect it to be a small correction
@@ -1743,13 +1743,13 @@ Consequences, revised:
 - **Interim mitigation available today, unmeasured:** a per-class vehicle
   confidence floor for ground view, mirroring what
   `CONF_THRESHOLD_PERSONNEL_GROUND` does for people (§17b). The detections
-  exist at 0.05–0.10. This would trade precision for them and has not been
-  swept — do not adopt it without the sweep and a look at annotated frames,
+  exist at 0.05-0.10. This would trade precision for them and has not been
+  swept - do not adopt it without the sweep and a look at annotated frames,
   since low-confidence vehicle boxes are exactly the failure of §14.
 
 **d. Duplicate boxes on single targets in dense crowds.** Several people carry
 two or three concentric boxes. Since the head is `end2end` and NMS-free (§19),
-there is no suppression parameter to tighten — this is learned behaviour and, like
+there is no suppression parameter to tighten - this is learned behaviour and, like
 the crowd recall it accompanies, only training data changes it.
 
 ### 21. SARD: the pose hypothesis is confirmed, and fine-tuning on it alone destroys the model (2026-09-05)
@@ -2104,7 +2104,7 @@ this failure.
   stock COCO `yolo26s.pt` finds 1 of ~5), and not recoverable from the motion
   channel (at either coherence threshold it tags only the burned-in subtitles).
   Pose, viewpoint and false-colour palette are the gap. The training run that
-  targets this **has now been run and promoted** (section 17) — but whether it
+  targets this **has now been run and promoted** (section 17) - but whether it
   actually put boxes on the people in `v10` is still unverified, and the val
   metrics cannot answer it.
   - **Substantially improved 2026-09-06 (section 22).** Blending SARD into the
@@ -2141,17 +2141,17 @@ this failure.
 - **Drones-as-targets are still not a class and cannot be detected.** VisDrone
   is footage taken *from* drones, not *of* them; it contains no UAV
   annotations, and neither does WiderPerson. No threshold or resolution
-  change can fix this — it needs UAV-labelled data and a 5th class. **Do not
+  change can fix this - it needs UAV-labelled data and a 5th class. **Do not
   confuse this with fix 10's drone-view model**, which is a checkpoint
   specialized for footage shot *from* a drone (a different, already-solved
-  problem) — it still only detects the same 4 ground/vehicle classes, just
+  problem) - it still only detects the same 4 ground/vehicle classes, just
   better, on that camera angle.
 - **Weak `two_wheeler` confused for `light_vehicle` under blur/low light.**
   Two residual burst frames remain on `v6.mp4` (517, 735) after fix 9: a
   cluster of low-confidence (0.25-0.53), non-overlapping `light_vehicle`
   boxes over a row of parked motorbikes during a heavily motion-blurred night
   pass. Visually consistent with `two_wheeler`'s weak mAP50 (0.34-0.46 vs.
-  `light_vehicle`'s 0.79-0.86) rather than a motion-filter phantom — see fix
+  `light_vehicle`'s 0.79-0.86) rather than a motion-filter phantom - see fix
   9. Same underlying cause as the existing "confident off-distribution false
   positives" item below, not a new bug; would need blur/low-light training
   imagery or a `two_wheeler`-specific accuracy pass to fix properly.
@@ -2162,7 +2162,7 @@ this failure.
 - **Confident false positives off-distribution.** On a close-up desk clip the
   model still puts `light_vehicle` at 0.32-0.43 on a highlighter. Nothing in
   training resembles indoor close-range scenes; fix it with negative/indoor
-  imagery in the training set, not with the threshold. **SUPERSEDED for `v11.mp4` — see section 16a/16b.** That clip's boxes were
+  imagery in the training set, not with the threshold. **SUPERSEDED for `v11.mp4` - see section 16a/16b.** That clip's boxes were
   landing on the HUD (reticle dashes and telemetry glyphs), not on the scene,
   and are now 87.7% removed by `app/overlay_mask.py` with no training change.
   The driving-dataset recommendation below would not have addressed it. The
@@ -2196,15 +2196,15 @@ this failure.
   outside `.venv`. The fixes themselves check out (re-verified directly
   against the live TensorRT engines for fix 13 above), but the script should
   be recreated so future motion-filter changes get an automated regression
-  sweep across all `vN.mp4` clips instead of relying on manual spot checks —
+  sweep across all `vN.mp4` clips instead of relying on manual spot checks  - 
   which is exactly how fix 13's `v6.mp4` frame 962 and the still-open
   `v7.mp4` frame 261 (below) went undetected until now.
-- ~~**`v7.mp4` frame 261: 7 `moving_object` boxes, baseline 0**~~ **Fixed 2026-09-01 (section 16d)** with `MOTION_CHRONIC_COOLDOWN=3` — the cooldown the note below called for. Both of that clip's bursts are gone; `v2`/`v3`/`v4`/`v5`/`v6`/`v9` are identical and `v1` improved. Original note follows:
-- **`v7.mp4` frame 261: 7 `moving_object` boxes, baseline 0** — same
+- ~~**`v7.mp4` frame 261: 7 `moving_object` boxes, baseline 0**~~ **Fixed 2026-09-01 (section 16d)** with `MOTION_CHRONIC_COOLDOWN=3` - the cooldown the note below called for. Both of that clip's bursts are gone; `v2`/`v3`/`v4`/`v5`/`v6`/`v9` are identical and `v1` improved. Original note follows:
+- **`v7.mp4` frame 261: 7 `moving_object` boxes, baseline 0** - same
   boundary-flicker shape as fix 13, but on `MOTION_CHRONIC_BLOB_COUNT`
   (surviving blob count 17-20 for several consecutive frames, right under the
   20 cutoff) rather than `EGO_STATIC_SHIFT`. EMA-smoothing this gate the same
-  way was tried and made it worse (see fix 13) — the gate needs to react
+  way was tried and made it worse (see fix 13) - the gate needs to react
   fast, not average. Needs a different mechanism, e.g. a short cooldown that
   keeps dropping blobs for a few frames after the gate trips once, so a scene
   hovering just under the cutoff can't rebuild a coherent track between
@@ -2213,7 +2213,7 @@ this failure.
   only cover v1-v7). Directly re-run: it has no `moving_object` explosion,
   but its ego-compensation residual check drops 224/225 frames as unreliable
   (parallax-heavy footage), so the class-agnostic motion tag is effectively
-  blind on this clip — a different, non-urgent gap (under-detection, not a
+  blind on this clip - a different, non-urgent gap (under-detection, not a
   burst), noted here so it isn't mistaken for an untested unknown next time.
 
 ## Known limitations
@@ -2222,7 +2222,7 @@ this failure.
   wants ~5.5 GB. Both fit on 8 GB at `batch=8`, but it is tight. Set
   `BATTLESIGHT_DEVICE=cpu` before starting uvicorn if you need to train and serve
   at once, or export to TensorRT/ONNX for serving.
-- **GPU work still serialises** — deliberately, since there is one GPU. The
+- **GPU work still serialises** - deliberately, since there is one GPU. The
   threadpool keeps the event loop responsive; it does not make inference
   parallel. Two feeds at 25 ms/frame share ~40 fps between them.
 - **Job state is in-memory.** Restarting the API loses job history; a running
@@ -2230,7 +2230,7 @@ this failure.
 - VisDrone-DET has no consecutive frames, so the motion filter is verified
   against synthetic pans (`tests/make_clips.py`), not real drone video. Tune
   `MOTION_THRESHOLD` against a real feed before trusting it.
-- `allow_origins=["*"]` — tighten before this leaves the laptop.
+- `allow_origins=["*"]` - tighten before this leaves the laptop.
 
 ## Tests
 
@@ -2242,14 +2242,14 @@ that belong here rather than there:
 - `tests/make_clips.py` regenerates the synthetic static/pan clips the motion
   tests use, so they are not committed. VisDrone-DET has no consecutive frames,
   which is why the motion filter is verified against synthetic pans in the first
-  place — see the limitation below.
+  place - see the limitation below.
 
 ## Measured on this machine
 
 | | |
 |---|---|
-| epoch time (`yolo26s`, batch 8, 640) | 149–162 s |
+| epoch time (`yolo26s`, batch 8, 640) | 149-162 s |
 | peak VRAM training | 5539 MiB / 8188 MiB |
 | mAP50 after 1 / 2 / 3 epochs | 0.309 / 0.364 / 0.409 |
-| inference, 1920x1080 frame | 24–57 ms |
+| inference, 1920x1080 frame | 24-57 ms |
 | `/health` under an active feed | ~1.2 ms |

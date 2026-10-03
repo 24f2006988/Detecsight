@@ -17,15 +17,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 
-# Core is deliberately small: numpy and OpenCV are everything the pure-CV layer
-# needs. app.config, app.motion_filter and app.overlay_mask import nothing
-# heavier, which is what lets the motion, coherence and overlay tests run on a
-# CPU-only CI box in seconds with no weights and no torch download.
-#
-# That boundary is a real architectural property, not an accident, so it is
-# expressed here rather than only described in prose: CI installs `.[dev]` and
-# nothing else, so a stray `import torch` in the filter layer turns into a red
-# build instead of a slow one.
+# numpy and OpenCV are all the motion and overlay filters need. Keeping them free
+# of torch is what lets those tests run on a CPU-only CI box in seconds, and CI
+# installs only `.[dev]`, so a stray `import torch` there fails the build.
 dependencies = [
     "numpy>=2.0",
     "opencv-python>=4.10",
@@ -33,16 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The full inference service: model stack plus the HTTP/WebSocket layer. This
-# is the install the README and the Dockerfile use.
-#
-# torch is unpinned here on purpose. requirements.txt pins torch==2.13.0+cu126,
-# a local-version wheel that exists only on PyTorch's own index and cannot be
-# installed on a machine without CUDA at all -- which made the project
-# uninstallable for anyone without this exact GPU. Pip resolves whatever build
-# suits the host from here; pre-install the CPU wheels first (see the
-# Dockerfile) to keep a CPU-only image from pulling ~2.5 GB of CUDA libraries
-# it can never call.
+# The full service: model stack plus the HTTP and WebSocket layer.
+# torch is not pinned. requirements.txt pins a +cu126 build that only exists on
+# PyTorch's own index and cannot be installed without CUDA. The Dockerfile
+# installs the CPU wheels first so it does not pull 2.5 GB of CUDA libraries.
 serve = [
     "torch>=2.6",
     "torchvision>=0.21",
@@ -56,21 +44,18 @@ serve = [
     "aiortc>=1.9",
 ]
 
-# TensorRT FP16 export (scripts/export_engine.py). Not pinned, and not part of
-# `serve`: the correct wheel depends on the installed CUDA and driver version,
-# and Detector.load() falls back to the .pt checkpoint when no engine is
-# present, so inference works without it -- just ~2x slower.
+# TensorRT FP16 export (scripts/export_engine.py). Not pinned, because the right
+# wheel depends on your CUDA and driver. Without an engine it falls back to the
+# .pt checkpoint, about 2x slower.
 gpu = [
     "tensorrt-cu12",
     "tensorrt-cu12-libs",
     "tensorrt-cu12-bindings",
 ]
 
-# Training-time augmentation. Separate from `serve` because albumentations
-# depends on opencv-python-headless, which shares the cv2/ directory with
-# opencv-python -- last install wins, and the headless build has no highgui, so
-# pulling it into a machine that runs the preview windows silently breaks them.
-# Install this in a training environment, never alongside a preview workflow.
+# Augmentation for training. Kept separate because albumentations pulls in
+# opencv-python-headless, which overwrites opencv-python and breaks preview
+# windows. Install it in a training environment only.
 train = [
     "albumentations>=2.0",
     "matplotlib>=3.9",
@@ -87,15 +72,16 @@ Repository = "https://github.com/24f2006988/Detecsight"
 [tool.setuptools]
 packages = ["app", "app.routers"]
 
+[tool.setuptools.package-data]
+app = ["static/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The default run is the subset that needs no GPU, no checkpoint and no server,
-# so `pytest` on a laptop or a CI runner does something useful instead of
-# erroring on a missing CUDA device. Opt the rest in explicitly:
-#   pytest -m gpu          the gated-path test, needs this machine
-#   pytest -m model        needs a checkpoint on disk
-#   pytest -m server       needs uvicorn on 127.0.0.1:8000
-#   pytest -m ""           everything
+# The default run needs no GPU, checkpoint or server. Opt in to the rest:
+#   pytest -m gpu       needs a CUDA device
+#   pytest -m model     needs a checkpoint on disk
+#   pytest -m server    needs uvicorn on 127.0.0.1:8000
+#   pytest -m ""        everything
 addopts = "-m 'not gpu and not model and not server'"
 markers = [
     "gpu: requires a CUDA device",
@@ -108,11 +94,8 @@ line-length = 110
 target-version = "py312"
 
 [tool.ruff.lint]
-# Deliberately not `UP` (pyupgrade). It fires ~95 times here, entirely on
-# typing.Dict -> dict and .format() -> f-string in code that works, and
-# accepting it would mean a hundred-line stylistic diff across every module
-# with no behavioural change to show for it. The rules kept are the ones that
-# find defects: pyflakes, pycodestyle, import order, and bugbear.
+# Not `UP` (pyupgrade). It fires about 95 times on typing.Dict and .format() in
+# code that works, and would mean a big diff with no change in behaviour.
 select = ["E", "F", "W", "I", "B"]
 ignore = [
     "E501",  # long lines are almost all measurement tables in comments

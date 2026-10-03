@@ -1,4 +1,4 @@
-# BattleSight AR — drone-view tactical detection
+# BattleSight AR - drone-view tactical detection
 # Derived from VisDrone2019-DET, 10 classes collapsed to 4.
 
 path: VisDrone                 # resolved against the ultralytics datasets_dir setting

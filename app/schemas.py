@@ -1,4 +1,4 @@
-"""Pydantic models — these define the JSON contract between the backend and
+"""Pydantic models - these define the JSON contract between the backend and
 the AR helmet client."""
 from typing import List, Optional
 

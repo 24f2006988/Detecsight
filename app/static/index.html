@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DetecSight demo</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2128; --muted:#656d76; --line:#d8dce1; --accent:#1f6feb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --accent:#58a6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { margin:0 0 4px; font-size:1.6rem; }
+  p { margin:0 0 12px; color:var(--muted); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-top:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 16px; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  select, input[type=file] { font:inherit; color:var(--text); }
+  canvas { width:100%; height:auto; border-radius:6px; background:#000; display:block; }
+  table { width:100%; border-collapse:collapse; margin-top:12px; font-size:.9rem; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); }
+  #status { color:var(--muted); font-size:.9rem; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>DetecSight</h1>
+  <p>Upload a frame from a drone or helmet camera and it draws what it finds. People are the class it is best at.
+     This runs on a CPU, so give it a few seconds. <a href="/docs">API docs</a> &middot;
+     <a href="https://github.com/24f2006988/Detecsight">source</a></p>
+
+  <div class="card">
+    <div class="row">
+      <input type="file" id="file" accept="image/jpeg,image/png">
+      <label>view
+        <select id="view"><option value="ground">ground</option><option value="drone">drone</option></select>
+      </label>
+      <button id="go" disabled>Detect</button>
+      <span id="status"></span>
+    </div>
+  </div>
+
+  <div class="card" id="result" hidden>
+    <canvas id="canvas"></canvas>
+    <table id="table"><thead><tr><th>class</th><th>confidence</th><th>box (px)</th></tr></thead><tbody></tbody></table>
+  </div>
+</main>
+
+<script>
+const COLORS = { personnel:"#ff4d4d", two_wheeler:"#ffb020", light_vehicle:"#2ecc71", heavy_vehicle:"#3498db", moving_object:"#c77dff" };
+const fileInput = document.getElementById("file");
+const go = document.getElementById("go");
+const statusEl = document.getElementById("status");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let image = null;
+
+fileInput.addEventListener("change", () => {
+  const f = fileInput.files[0];
+  go.disabled = !f;
+  if (!f) return;
+  image = new Image();
+  image.onload = () => draw([]);
+  image.src = URL.createObjectURL(f);
+});
+
+function draw(dets) {
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  ctx.drawImage(image, 0, 0);
+  const lw = Math.max(2, canvas.width / 400);
+  ctx.lineWidth = lw;
+  ctx.font = `${Math.max(12, canvas.width / 70)}px sans-serif`;
+  for (const d of dets) {
+    const x = d.x1 * canvas.width, y = d.y1 * canvas.height;
+    const w = (d.x2 - d.x1) * canvas.width, h = (d.y2 - d.y1) * canvas.height;
+    ctx.strokeStyle = ctx.fillStyle = COLORS[d.class_name] || "#fff";
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillText(`${d.class_name} ${d.confidence.toFixed(2)}`, x, Math.max(14, y - 4));
+  }
+  document.getElementById("result").hidden = false;
+}
+
+go.addEventListener("click", async () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  go.disabled = true;
+  statusEl.textContent = "running...";
+  const body = new FormData();
+  body.append("file", f);
+  try {
+    const view = document.getElementById("view").value;
+    const res = await fetch(`/detect?view=${view}`, { method: "POST", body });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const data = await res.json();
+    draw(data.detections);
+    const tbody = document.querySelector("#table tbody");
+    tbody.innerHTML = "";
+    for (const d of data.detections) {
+      const tr = tbody.insertRow();
+      tr.insertCell().textContent = d.class_name;
+      tr.insertCell().textContent = d.confidence.toFixed(2);
+      tr.insertCell().textContent = [d.x1 * data.frame_width, d.y1 * data.frame_height,
+                                     d.x2 * data.frame_width, d.y2 * data.frame_height].map(Math.round).join(", ");
+    }
+    statusEl.textContent = `${data.detections.length} found in ${Math.round(data.inference_ms)} ms`;
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  } finally {
+    go.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

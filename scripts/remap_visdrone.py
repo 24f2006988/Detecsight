@@ -1,7 +1,7 @@
 """Collapse VisDrone's 10 classes into 4 BattleSight tactical classes.
 
 Originals are backed up to labels_visdrone_raw/ on first run, so this
-script is safe to run more than once — it always remaps FROM the backup.
+script is safe to run more than once - it always remaps FROM the backup.
 """
 import shutil
 from pathlib import Path
@@ -31,7 +31,7 @@ def backup_originals():
     src = DATASET_ROOT / "labels"
     dst = DATASET_ROOT / "labels_visdrone_raw"
     if dst.exists():
-        print(f"Backup already exists at {dst} — using it as the source.")
+        print(f"Backup already exists at {dst} - using it as the source.")
         return dst
     print(f"Backing up {src} -> {dst} ...")
     shutil.copytree(src, dst)

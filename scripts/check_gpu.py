@@ -10,4 +10,4 @@ if torch.cuda.is_available():
     print("total VRAM (GB)    :", round(props.total_memory / 1024**3, 2))
     print("compute capability :", f"{props.major}.{props.minor}")
 else:
-    print("No CUDA device. You installed the CPU-only wheel — reinstall from the cu126 index.")
+    print("No CUDA device. You installed the CPU-only wheel - reinstall from the cu126 index.")

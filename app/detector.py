@@ -54,7 +54,15 @@ class Detector:
         # don't pass imgsz here, a static engine rejects anything but its own shape
         dummy = np.zeros((config.IMGSZ, config.IMGSZ, 3), dtype=np.uint8)
         model.predict(dummy, device=config.DEVICE, quantize=config.QUANTIZE, verbose=False)
+        # a static engine is built for one shape, so predict() must never override it
+        backend = getattr(model.predictor, "model", None)
+        model._static_engine = load_path.suffix == ".engine" and getattr(backend, "dynamic", True) is False
         return model
+
+    @staticmethod
+    def _imgsz(model: YOLO, size: int) -> dict:
+        """imgsz for predict(), left out for a static engine so it uses its own shape."""
+        return {} if getattr(model, "_static_engine", False) else {"imgsz": size}
 
     def load(self):
         p = Path(config.MODEL_PATH)
@@ -217,7 +225,7 @@ class Detector:
             t0 = time.perf_counter()
             results = model.predict(
                 frame,
-                imgsz=config.IMGSZ,
+                **self._imgsz(model, config.IMGSZ),
                 conf=self._model_conf_floor(view),
                 iou=config.IOU_THRESHOLD,
                 max_det=config.MAX_DET,
@@ -312,7 +320,7 @@ class Detector:
         if model is None:
             return detections
         results = model.predict(
-            tile, imgsz=config.FARFIELD_IMGSZ, conf=self._model_conf_floor(view),
+            tile, **self._imgsz(model, config.FARFIELD_IMGSZ), conf=self._model_conf_floor(view),
             iou=config.IOU_THRESHOLD, max_det=config.MAX_DET,
             device=config.DEVICE, quantize=config.QUANTIZE, verbose=False,
         )
@@ -386,7 +394,7 @@ class Detector:
 
         results = model.predict(
             [c for _, c in usable],
-            imgsz=config.MOTION_CROP_IMGSZ,
+            **self._imgsz(model, config.MOTION_CROP_IMGSZ),
             conf=self._model_conf_floor(view),
             iou=config.IOU_THRESHOLD,
             device=config.DEVICE,
@@ -452,7 +460,7 @@ class Detector:
         if len(crop_boxes) > config.MOTION_MAX_CROPS_PER_FRAME:
             # too much is moving, one full pass is cheaper than all the crops
             results = model.predict(
-                frame, imgsz=config.IMGSZ, conf=self._model_conf_floor(view),
+                frame, **self._imgsz(model, config.IMGSZ), conf=self._model_conf_floor(view),
                 iou=config.IOU_THRESHOLD, max_det=config.MAX_DET,
                 device=config.DEVICE, quantize=config.QUANTIZE, verbose=False,
             )
@@ -483,7 +491,7 @@ class Detector:
         self._bind_tracker(model, view, source_id)
         results = model.track(
             frame,
-            imgsz=config.IMGSZ,
+            **self._imgsz(model, config.IMGSZ),
             conf=self._model_conf_floor(view),
             iou=config.IOU_THRESHOLD,
             max_det=config.MAX_DET,

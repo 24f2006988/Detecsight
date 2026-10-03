@@ -26,4 +26,5 @@ EOF
 fi
 
 echo "[entrypoint] starting: $*"
+echo "[entrypoint] when it says startup complete, open http://localhost:${PORT:-8000} (not 0.0.0.0)"
 exec "$@"

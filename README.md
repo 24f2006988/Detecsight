@@ -94,14 +94,13 @@ Three problems are still open:
 
 ![light_vehicle false positives on a pencil case and a highlighter](docs/offdistribution_false_positives.jpg)
 
-Smaller things: the TensorRT engine I export is static at 736x1280, so on a GPU it only takes 16:9 frames and anything else returns a 500 (the `.pt` and Docker paths do not have this), about 10 fps tracked at 1280 px, no drone-as-a-target class, buses and trucks share one class, and training state is kept in memory.
+Smaller things: about 10 fps tracked at 1280 px, no drone-as-a-target class, buses and trucks share one class, and training state is kept in memory.
 
 ## What I would improve next
 
 - run the BDD100K training and check it against a ground-level vehicle validation split. The blended validation set cannot see this failure at all
 - find or make more data of people far away and people lying down
 - add a drone class
-- letterbox frames to the engine's shape so the GPU path takes any aspect ratio
 - keep the training job state on disk and not in memory
 
 ## How it works
